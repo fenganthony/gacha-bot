@@ -6,14 +6,38 @@
   },
   "work": [
     {
-      "name": "便利商店",
+      "name": "攻略地下城",
       "duration_hours": 2,
-      "energy_cost": 200,
-      "token_reward": 300
+      "energy_cost": 250,
+      "token_reward": 500
+    },
+    {
+      "name": "征討魔王",
+      "duration_hours": 6,
+      "energy_cost": 600,
+      "token_reward": 1000
+    },
+    {
+      "name": "掃蕩魔物",
+      "duration_hours": 8,
+      "energy_cost": 800,
+      "token_reward": 1300
+    },
+    {
+      "name": "當個男模",
+      "duration_hours": 12,
+      "energy_cost": 1000,
+      "token_reward": 1600
+    },
+    {
+      "name": "打掃公會",
+      "duration_hours": 20,
+      "energy_cost": 1500,
+      "token_reward": 2200
     }
   ],
   "tokens": {
-    "gacha_cost": 1000,
+    "gacha_cost": 20,
     "checkin_reset_hours": 24,
     "checkin_reward": 200
   },
@@ -25,10 +49,21 @@
     "SSR": 5
   },
   "gacha_pool": [
-    { "name": "⭐ 普通獎品", "rarity": "N" },
-    { "name": "⭐⭐ 稀有獎品", "rarity": "R" },
-    { "name": "⭐⭐⭐ 史詩獎品", "rarity": "SR" },
-    { "name": "⭐⭐⭐⭐ 傳說獎品", "rarity": "SSR" },
-    { "name": "秘藏獎品", "rarity": "秘藏", "weight": 1 }
+    {
+      "name": "⭐ 普通獎品",
+      "rarity": "N"
+    },
+    {
+      "name": "⭐⭐ 稀有獎品",
+      "rarity": "R"
+    },
+    {
+      "name": "⭐⭐⭐ 史詩獎品",
+      "rarity": "SR"
+    },
+    {
+      "name": "⭐⭐⭐⭐ 傳說獎品",
+      "rarity": "SSR"
+    }
   ]
 }
