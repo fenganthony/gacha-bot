@@ -1,0 +1,34 @@
+{
+  "bot_token": "YOUR_DISCORD_BOT_TOKEN",
+  "energy": {
+    "daily_amount": 1000,
+    "max_amount": 2000
+  },
+  "work": [
+    {
+      "name": "便利商店",
+      "duration_hours": 2,
+      "energy_cost": 200,
+      "token_reward": 300
+    }
+  ],
+  "tokens": {
+    "gacha_cost": 1000,
+    "checkin_reset_hours": 24,
+    "checkin_reward": 200
+  },
+  "admin_role": "",
+  "rarity_weights": {
+    "N": 50,
+    "R": 30,
+    "SR": 15,
+    "SSR": 5
+  },
+  "gacha_pool": [
+    { "name": "⭐ 普通獎品", "rarity": "N" },
+    { "name": "⭐⭐ 稀有獎品", "rarity": "R" },
+    { "name": "⭐⭐⭐ 史詩獎品", "rarity": "SR" },
+    { "name": "⭐⭐⭐⭐ 傳說獎品", "rarity": "SSR" },
+    { "name": "秘藏獎品", "rarity": "秘藏", "weight": 1 }
+  ]
+}
