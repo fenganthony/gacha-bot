@@ -144,6 +144,62 @@ class Admin(commands.Cog):
         self.save_config()
         await interaction.followup.send(f"✅ 已刪除獎品：**{name}**")
 
+    @admin_group.command(name="新增冒險", description="新增冒險事件")
+    @app_commands.describe(
+        name="冒險名稱",
+        cost_type="消耗類型 (energy/tokens)",
+        cost_amount="消耗數量",
+        success_rate="成功率 (0-100)",
+        success_type="成功獎勵類型 (fixed/multiplier)",
+        success_value="成功獎勵數值（fixed=代幣數, multiplier=倍率）",
+        failure_type="失敗獎勵類型 (fixed/multiplier)",
+        failure_value="失敗獎勵數值",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def add_adventure(
+        self, interaction: discord.Interaction,
+        name: str, cost_type: str, cost_amount: int, success_rate: int,
+        success_type: str, success_value: float,
+        failure_type: str, failure_value: float,
+    ):
+        await interaction.response.defer()
+        if cost_type not in ("energy", "tokens"):
+            await interaction.followup.send("❌ cost_type 必須是 energy 或 tokens")
+            return
+        if success_type not in ("fixed", "multiplier") or failure_type not in ("fixed", "multiplier"):
+            await interaction.followup.send("❌ 獎勵類型必須是 fixed 或 multiplier")
+            return
+        if not (0 <= success_rate <= 100):
+            await interaction.followup.send("❌ 成功率必須在 0-100 之間")
+            return
+        if "adventures" not in self.config:
+            self.config["adventures"] = []
+        self.config["adventures"].append({
+            "name": name,
+            "cost_type": cost_type,
+            "cost_amount": cost_amount,
+            "success_rate": success_rate / 100,
+            "success_reward": {"type": success_type, "amount" if success_type == "fixed" else "value": success_value},
+            "failure_reward": {"type": failure_type, "amount" if failure_type == "fixed" else "value": failure_value},
+        })
+        self.save_config()
+        cost_label = "精力" if cost_type == "energy" else "代幣"
+        await interaction.followup.send(f"✅ 已新增冒險：**{name}**（{cost_label} -{cost_amount}, 成功率 {success_rate}%）")
+
+    @admin_group.command(name="刪除冒險", description="刪除冒險事件")
+    @app_commands.describe(name="冒險名稱")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_adventure(self, interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        adventures = self.config.get("adventures", [])
+        before = len(adventures)
+        self.config["adventures"] = [a for a in adventures if a["name"] != name]
+        if len(self.config["adventures"]) == before:
+            await interaction.followup.send(f"❌ 找不到冒險：**{name}**")
+            return
+        self.save_config()
+        await interaction.followup.send(f"✅ 已刪除冒險：**{name}**")
+
     @admin_group.command(name="管理角色", description="設定可使用管理指令的角色")
     @app_commands.describe(role="伺服器角色")
     @app_commands.checks.has_permissions(administrator=True)
@@ -220,6 +276,18 @@ class Admin(commands.Cog):
         embed.add_field(name="稀有度權重", value=rw_lines, inline=False)
         embed.add_field(name="打工地點", value=work_lines, inline=False)
         embed.add_field(name="獎品池", value=prize_lines, inline=False)
+        adventures = c.get("adventures", [])
+        if adventures:
+            adv_lines = []
+            for a in adventures:
+                cost_label = "⚡" if a["cost_type"] == "energy" else "🪙"
+                rate = int(a["success_rate"] * 100)
+                sr = a["success_reward"]
+                fr = a["failure_reward"]
+                sr_str = f"+{sr.get('amount', sr.get('value', 0))}" if sr["type"] == "fixed" else f"×{sr['value']}"
+                fr_str = f"+{fr.get('amount', fr.get('value', 0))}" if fr["type"] == "fixed" else f"×{fr['value']}"
+                adv_lines.append(f"  • **{a['name']}** — {cost_label}-{a['cost_amount']} | {rate}% | 成功{sr_str} 失敗{fr_str}")
+            embed.add_field(name="冒險事件", value="\n".join(adv_lines), inline=False)
         await interaction.followup.send(embed=embed)
 
 

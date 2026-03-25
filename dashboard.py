@@ -1,10 +1,13 @@
 import json
+import copy
+import time
 from pathlib import Path
 from aiohttp import web
 import database as db
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 STATIC_PATH = Path(__file__).parent / "static"
+PRESETS_PATH = Path(__file__).parent / "presets"
 
 
 def save_config(config: dict):
@@ -31,6 +34,7 @@ def create_app(config: dict) -> web.Application:
             "work": c["work"],
             "gacha_pool": items,
             "admin_role": c.get("admin_role", ""),
+            "adventures": c.get("adventures", []),
         })
 
     # --- API: Update energy ---
@@ -105,11 +109,133 @@ def create_app(config: dict) -> web.Application:
         save_config(c)
         return web.json_response({"ok": True})
 
+    # --- API: Adventure CRUD ---
+    async def add_adventure(request):
+        data = await request.json()
+        c = app["config"]
+        if "adventures" not in c:
+            c["adventures"] = []
+        sr_type = data.get("success_type", "fixed")
+        fr_type = data.get("failure_type", "fixed")
+        c["adventures"].append({
+            "name": data["name"],
+            "cost_type": data["cost_type"],
+            "cost_amount": int(data["cost_amount"]),
+            "success_rate": float(data["success_rate"]) / 100,
+            "success_reward": {"type": sr_type, "amount" if sr_type == "fixed" else "value": float(data["success_value"])},
+            "failure_reward": {"type": fr_type, "amount" if fr_type == "fixed" else "value": float(data["failure_value"])},
+        })
+        save_config(c)
+        return web.json_response({"ok": True})
+
+    async def delete_adventure(request):
+        data = await request.json()
+        c = app["config"]
+        c["adventures"] = [a for a in c.get("adventures", []) if a["name"] != data["name"]]
+        save_config(c)
+        return web.json_response({"ok": True})
+
+    # --- API: Presets ---
+    SAVEABLE_KEYS = ("energy", "tokens", "rarity_weights", "work", "gacha_pool", "adventures")
+
+    async def list_presets(request):
+        PRESETS_PATH.mkdir(exist_ok=True)
+        presets = []
+        for f in sorted(PRESETS_PATH.glob("*.json")):
+            with open(f, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            presets.append({
+                "name": data.get("name", f.stem),
+                "filename": f.stem,
+                "saved_at": data.get("saved_at", ""),
+            })
+        return web.json_response(presets)
+
+    async def save_preset(request):
+        data = await request.json()
+        name = data.get("name", "").strip()
+        if not name:
+            return web.json_response({"ok": False, "msg": "名稱不可為空"}, status=400)
+        PRESETS_PATH.mkdir(exist_ok=True)
+        c = app["config"]
+        preset = {"name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        for key in SAVEABLE_KEYS:
+            if key in c:
+                preset[key] = copy.deepcopy(c[key])
+        filename = name.replace("/", "_").replace("\\", "_")
+        with open(PRESETS_PATH / f"{filename}.json", "w", encoding="utf-8") as f:
+            json.dump(preset, f, ensure_ascii=False, indent=2)
+        return web.json_response({"ok": True})
+
+    async def load_preset(request):
+        data = await request.json()
+        filename = data.get("filename", "")
+        path = PRESETS_PATH / f"{filename}.json"
+        if not path.exists():
+            return web.json_response({"ok": False, "msg": "找不到該組合"}, status=404)
+        with open(path, "r", encoding="utf-8") as f:
+            preset = json.load(f)
+        c = app["config"]
+        for key in SAVEABLE_KEYS:
+            if key in preset:
+                c[key] = copy.deepcopy(preset[key])
+        save_config(c)
+        return web.json_response({"ok": True})
+
+    async def delete_preset(request):
+        data = await request.json()
+        filename = data.get("filename", "")
+        path = PRESETS_PATH / f"{filename}.json"
+        if path.exists():
+            path.unlink()
+        return web.json_response({"ok": True})
+
+    # --- API: Activity Mode ---
+    async def get_activity(request):
+        c = app["config"]
+        return web.json_response(c.get("activity", {"active": False, "name": "", "initial_event_tokens": 0}))
+
+    async def toggle_activity(request):
+        data = await request.json()
+        c = app["config"]
+        if "activity" not in c:
+            c["activity"] = {"active": False, "name": "", "initial_event_tokens": 0}
+        activate = data.get("active", False)
+        if activate and not c["activity"]["active"]:
+            # Turning ON
+            c["activity"]["active"] = True
+            c["activity"]["name"] = data.get("name", "活動")
+            c["activity"]["initial_event_tokens"] = int(data.get("initial_event_tokens", 0))
+            db.activate_event(c)
+        elif not activate and c["activity"]["active"]:
+            # Turning OFF
+            c["activity"]["active"] = False
+            db.deactivate_event()
+        save_config(c)
+        return web.json_response({"ok": True})
+
+    # --- API: User Management ---
+    async def get_users(request):
+        users = db.get_all_users(app["config"])
+        return web.json_response(users)
+
+    async def update_user_api(request):
+        data = await request.json()
+        user_id = data.pop("user_id", None)
+        if not user_id:
+            return web.json_response({"ok": False}, status=400)
+        db.update_user(user_id, data)
+        return web.json_response({"ok": True})
+
+    async def users_page(request):
+        return web.FileResponse(STATIC_PATH / "users.html")
+
     # --- API: Health check ---
     async def health(request):
         return web.json_response({"status": "ok"})
 
     app.router.add_get("/", index)
+    app.router.add_get("/users", users_page)
     app.router.add_get("/api/config", get_config)
     app.router.add_post("/api/energy", update_energy)
     app.router.add_post("/api/tokens", update_tokens)
@@ -118,6 +244,16 @@ def create_app(config: dict) -> web.Application:
     app.router.add_delete("/api/work", delete_work)
     app.router.add_post("/api/prize", add_prize)
     app.router.add_delete("/api/prize", delete_prize)
+    app.router.add_post("/api/adventure", add_adventure)
+    app.router.add_delete("/api/adventure", delete_adventure)
+    app.router.add_get("/api/presets", list_presets)
+    app.router.add_post("/api/presets", save_preset)
+    app.router.add_post("/api/presets/load", load_preset)
+    app.router.add_delete("/api/presets", delete_preset)
+    app.router.add_get("/api/activity", get_activity)
+    app.router.add_post("/api/activity", toggle_activity)
+    app.router.add_get("/api/users", get_users)
+    app.router.add_post("/api/users", update_user_api)
     app.router.add_get("/health", health)
 
     return app

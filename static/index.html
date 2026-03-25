@@ -42,16 +42,51 @@
   .inline-fields .field { flex: 1; }
   .full-width { grid-column: 1 / -1; }
   .rarity-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+  .preset-bar { background: #1e1f36; border: 1px solid #333560; border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .preset-bar h2 { font-size: 14px; color: #a0a0ff; margin: 0; white-space: nowrap; }
+  .preset-bar select { padding: 6px 10px; border-radius: 6px; border: 1px solid #444; background: #1a1b2e; color: #e0e0e0; font-size: 13px; min-width: 160px; }
+  .preset-bar input { padding: 6px 10px; border-radius: 6px; border: 1px solid #444; background: #1a1b2e; color: #e0e0e0; font-size: 13px; width: 140px; }
+  .btn-success { background: #2ecc71; color: #fff; }
+  .btn-success:hover { background: #27ae60; }
+  .btn-warning { background: #f39c12; color: #fff; }
+  .btn-warning:hover { background: #e67e22; }
+  .preset-time { font-size: 11px; color: #666; margin-left: 4px; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>🎰 轉蛋機器人 後台管理</h1>
-  <p>即時調整遊戲設定，變更會立即生效</p>
+  <p>即時調整遊戲設定，變更會立即生效 ｜ <a href="/users" style="color:#fff;text-decoration:underline">👥 玩家管理</a></p>
 </div>
 
 <div class="container">
+  <!-- Presets -->
+  <div class="preset-bar">
+    <h2>💾 設定組合</h2>
+    <select id="preset-select"><option value="">-- 選擇組合 --</option></select>
+    <button class="btn btn-warning btn-sm" onclick="loadPreset()">載入</button>
+    <button class="btn btn-danger btn-sm" onclick="deletePreset()">刪除</button>
+    <span style="color:#555">|</span>
+    <input type="text" id="preset-name" placeholder="輸入新組合名稱..." />
+    <button class="btn btn-success btn-sm" onclick="savePreset()">儲存目前設定</button>
+  </div>
+
+  <!-- Activity Mode -->
+  <div class="card" style="margin-bottom:20px; border-color:#f39c12" id="activity-card">
+    <h2>🎪 活動模式</h2>
+    <div id="activity-status"></div>
+    <div id="activity-controls">
+      <div class="inline-fields">
+        <div class="field"><label>活動名稱</label><input type="text" id="activity_name" placeholder="例：春節活動" /></div>
+        <div class="field"><label>每人初始限時代幣</label><input type="number" id="activity_initial" value="0" /></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-warning" id="activity-toggle" onclick="toggleActivity()">啟動活動</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Energy & Tokens -->
   <div class="grid">
     <div class="card">
@@ -151,6 +186,49 @@
       <button class="btn btn-primary" onclick="addPrize()">新增</button>
     </div>
   </div>
+
+  <!-- Adventures -->
+  <div class="card" style="margin-top:20px">
+    <h2>⚔️ 冒險事件</h2>
+    <table>
+      <thead><tr><th>名稱</th><th>消耗</th><th>成功率</th><th>成功獎勵</th><th>失敗獎勵</th><th></th></tr></thead>
+      <tbody id="adventure-table"></tbody>
+    </table>
+    <h3 style="font-size:13px;color:#888;margin:16px 0 8px">新增冒險</h3>
+    <div class="inline-fields">
+      <div class="field"><label>名稱</label><input type="text" id="new_adv_name" /></div>
+      <div class="field">
+        <label>消耗類型</label>
+        <select id="new_adv_cost_type">
+          <option value="energy">精力</option>
+          <option value="tokens">代幣</option>
+        </select>
+      </div>
+      <div class="field"><label>消耗數量</label><input type="number" id="new_adv_cost" /></div>
+      <div class="field"><label>成功率(%)</label><input type="number" id="new_adv_rate" min="0" max="100" /></div>
+    </div>
+    <div class="inline-fields" style="margin-top:8px">
+      <div class="field">
+        <label>成功獎勵類型</label>
+        <select id="new_adv_sr_type">
+          <option value="fixed">固定代幣</option>
+          <option value="multiplier">投入倍率</option>
+        </select>
+      </div>
+      <div class="field"><label>成功數值</label><input type="number" id="new_adv_sr_val" step="0.1" /></div>
+      <div class="field">
+        <label>失敗獎勵類型</label>
+        <select id="new_adv_fr_type">
+          <option value="fixed">固定代幣</option>
+          <option value="multiplier">投入倍率</option>
+        </select>
+      </div>
+      <div class="field"><label>失敗數值</label><input type="number" id="new_adv_fr_val" step="0.1" /></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="addAdventure()">新增</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -204,6 +282,22 @@ async function loadConfig() {
       <td><span class="badge ${badgeClass(p.rarity)}">${p.rarity}</span></td>
       <td>${p.name}${extra}</td><td>${pctStr}</td>
       <td><button class="btn btn-danger btn-sm" onclick="deletePrize('${p.name}')">刪除</button></td>
+    </tr>`;
+  }).join('');
+
+  // Adventures
+  const at = document.getElementById('adventure-table');
+  at.innerHTML = (c.adventures || []).map(a => {
+    const costIcon = a.cost_type === 'energy' ? '⚡' : '🪙';
+    const rate = Math.round(a.success_rate * 100);
+    const sr = a.success_reward;
+    const fr = a.failure_reward;
+    const srStr = sr.type === 'fixed' ? `🪙 +${sr.amount || 0}` : `🪙 ×${sr.value}`;
+    const frStr = fr.type === 'fixed' ? `🪙 +${fr.amount || 0}` : `🪙 ×${fr.value}`;
+    return `<tr>
+      <td>${a.name}</td><td>${costIcon} ${a.cost_amount}</td><td>${rate}%</td>
+      <td>${srStr}</td><td>${frStr}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteAdventure('${a.name}')">刪除</button></td>
     </tr>`;
   }).join('');
 }
@@ -283,7 +377,110 @@ async function deletePrize(name) {
   loadConfig();
 }
 
+// --- Activity Mode ---
+async function loadActivity() {
+  const a = await api('GET', '/api/activity');
+  const status = document.getElementById('activity-status');
+  const btn = document.getElementById('activity-toggle');
+  const card = document.getElementById('activity-card');
+  if (a.active) {
+    status.innerHTML = `<div style="background:#2d2a00;border:1px solid #f39c12;border-radius:8px;padding:12px;margin-bottom:12px"><strong>🎪 活動進行中：${a.name || '未命名'}</strong><br><span style="font-size:12px;color:#aaa">初始限時代幣：${a.initial_event_tokens} ｜ 結束後所有限時代幣將被清除</span></div>`;
+    btn.textContent = '結束活動';
+    btn.className = 'btn btn-danger';
+    card.style.borderColor = '#f39c12';
+  } else {
+    status.innerHTML = '';
+    btn.textContent = '啟動活動';
+    btn.className = 'btn btn-warning';
+    card.style.borderColor = '#333560';
+  }
+  window._activityActive = a.active;
+}
+
+async function toggleActivity() {
+  if (window._activityActive) {
+    if (!confirm('確定結束活動？所有玩家的限時代幣將被清除！')) return;
+    await api('POST', '/api/activity', { active: false });
+    toast('活動已結束，限時代幣已清除');
+  } else {
+    const name = document.getElementById('activity_name').value.trim();
+    const initial = document.getElementById('activity_initial').value;
+    if (!name) { toast('請輸入活動名稱', true); return; }
+    await api('POST', '/api/activity', { active: true, name, initial_event_tokens: initial });
+    toast(`活動「${name}」已啟動！`);
+  }
+  loadActivity();
+}
+
+// --- Presets ---
+async function loadPresets() {
+  const presets = await api('GET', '/api/presets');
+  const sel = document.getElementById('preset-select');
+  sel.innerHTML = '<option value="">-- 選擇組合 --</option>' +
+    presets.map(p => `<option value="${p.filename}">${p.name} (${p.saved_at})</option>`).join('');
+}
+
+async function savePreset() {
+  const name = document.getElementById('preset-name').value.trim();
+  if (!name) { toast('請輸入組合名稱', true); return; }
+  await api('POST', '/api/presets', { name });
+  document.getElementById('preset-name').value = '';
+  toast(`已儲存組合「${name}」`);
+  loadPresets();
+}
+
+async function loadPreset() {
+  const sel = document.getElementById('preset-select');
+  const filename = sel.value;
+  if (!filename) { toast('請先選擇組合', true); return; }
+  const name = sel.options[sel.selectedIndex].text;
+  if (!confirm(`確定載入組合？目前的設定會被覆蓋。`)) return;
+  await api('POST', '/api/presets/load', { filename });
+  toast(`已載入組合`);
+  loadConfig();
+  loadPresets();
+}
+
+async function deletePreset() {
+  const sel = document.getElementById('preset-select');
+  const filename = sel.value;
+  if (!filename) { toast('請先選擇組合', true); return; }
+  if (!confirm(`確定刪除這個組合？`)) return;
+  await api('DELETE', '/api/presets', { filename });
+  toast('組合已刪除');
+  loadPresets();
+}
+
+async function addAdventure() {
+  await api('POST', '/api/adventure', {
+    name: document.getElementById('new_adv_name').value,
+    cost_type: document.getElementById('new_adv_cost_type').value,
+    cost_amount: document.getElementById('new_adv_cost').value,
+    success_rate: document.getElementById('new_adv_rate').value,
+    success_type: document.getElementById('new_adv_sr_type').value,
+    success_value: document.getElementById('new_adv_sr_val').value,
+    failure_type: document.getElementById('new_adv_fr_type').value,
+    failure_value: document.getElementById('new_adv_fr_val').value,
+  });
+  document.getElementById('new_adv_name').value = '';
+  document.getElementById('new_adv_cost').value = '';
+  document.getElementById('new_adv_rate').value = '';
+  document.getElementById('new_adv_sr_val').value = '';
+  document.getElementById('new_adv_fr_val').value = '';
+  toast('冒險事件已新增');
+  loadConfig();
+}
+
+async function deleteAdventure(name) {
+  if (!confirm(`確定刪除冒險「${name}」？`)) return;
+  await api('DELETE', '/api/adventure', { name });
+  toast('冒險事件已刪除');
+  loadConfig();
+}
+
 loadConfig();
+loadPresets();
+loadActivity();
 </script>
 </body>
 </html>
