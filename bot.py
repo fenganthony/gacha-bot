@@ -4,11 +4,9 @@ import os
 import discord
 from discord.ext import commands
 from aiohttp import web
-from pathlib import Path
 import database as db
 from dashboard import create_app
-
-CONFIG_PATH = Path(__file__).parent / "config.json"
+from paths import CONFIG_PATH
 
 
 def load_config() -> dict:

@@ -1,13 +1,9 @@
 import json
 import copy
 import time
-from pathlib import Path
 from aiohttp import web
 import database as db
-
-CONFIG_PATH = Path(__file__).parent / "config.json"
-STATIC_PATH = Path(__file__).parent / "static"
-PRESETS_PATH = Path(__file__).parent / "presets"
+from paths import CONFIG_PATH, STATIC_PATH, PRESETS_PATH
 
 
 def save_config(config: dict):

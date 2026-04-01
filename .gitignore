@@ -4,3 +4,5 @@ __pycache__/
 .env
 config.json
 presets/
+installer/build/
+installer/dist/

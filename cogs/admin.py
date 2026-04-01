@@ -4,10 +4,8 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
-from pathlib import Path
 import database as db
-
-CONFIG_PATH = Path(__file__).parent.parent / "config.json"
+from paths import CONFIG_PATH
 
 
 class Admin(commands.Cog):

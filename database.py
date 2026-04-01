@@ -1,9 +1,7 @@
 import sqlite3
 import time
 from contextlib import contextmanager
-from pathlib import Path
-
-DB_PATH = Path(__file__).parent / "gacha.db"
+from paths import DB_PATH
 
 
 @contextmanager
