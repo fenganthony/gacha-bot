@@ -34,6 +34,7 @@ def create_app(config: dict) -> web.Application:
             "work": c["work"],
             "gacha_pool": items,
             "admin_role": c.get("admin_role", ""),
+            "redeem": c.get("redeem", {"channel_id": "", "role_id": "", "message_template": ""}),
             "adventures": c.get("adventures", []),
         })
 
@@ -117,14 +118,18 @@ def create_app(config: dict) -> web.Application:
             c["adventures"] = []
         sr_type = data.get("success_type", "fixed")
         fr_type = data.get("failure_type", "fixed")
-        c["adventures"].append({
+        adv = {
             "name": data["name"],
             "cost_type": data["cost_type"],
             "cost_amount": int(data["cost_amount"]),
             "success_rate": float(data["success_rate"]) / 100,
             "success_reward": {"type": sr_type, "amount" if sr_type == "fixed" else "value": float(data["success_value"])},
             "failure_reward": {"type": fr_type, "amount" if fr_type == "fixed" else "value": float(data["failure_value"])},
-        })
+        }
+        if data["cost_type"] == "custom_tokens":
+            adv["min_bet"] = int(data.get("min_bet", 1))
+            adv["max_bet"] = int(data.get("max_bet", 9999))
+        c["adventures"].append(adv)
         save_config(c)
         return web.json_response({"ok": True})
 
@@ -132,6 +137,18 @@ def create_app(config: dict) -> web.Application:
         data = await request.json()
         c = app["config"]
         c["adventures"] = [a for a in c.get("adventures", []) if a["name"] != data["name"]]
+        save_config(c)
+        return web.json_response({"ok": True})
+
+    # --- API: Redeem settings ---
+    async def update_redeem(request):
+        data = await request.json()
+        c = app["config"]
+        if "redeem" not in c:
+            c["redeem"] = {}
+        for key in ("channel_id", "role_id", "message_template"):
+            if key in data:
+                c["redeem"][key] = data[key]
         save_config(c)
         return web.json_response({"ok": True})
 
@@ -245,6 +262,7 @@ def create_app(config: dict) -> web.Application:
     app.router.add_post("/api/prize", add_prize)
     app.router.add_delete("/api/prize", delete_prize)
     app.router.add_post("/api/adventure", add_adventure)
+    app.router.add_post("/api/redeem", update_redeem)
     app.router.add_delete("/api/adventure", delete_adventure)
     app.router.add_get("/api/presets", list_presets)
     app.router.add_post("/api/presets", save_preset)

@@ -252,6 +252,19 @@ def do_adventure(user_id: str, adventure: dict, config: dict) -> dict:
     }
 
 
+def redeem_item(user_id: str, item_name: str, rarity: str) -> bool:
+    """Remove one copy of an item from inventory. Returns True if successful."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM inventory WHERE user_id = ? AND item_name = ? AND rarity = ? LIMIT 1",
+            (user_id, item_name, rarity),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
+    return True
+
+
 def get_inventory(user_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(

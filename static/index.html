@@ -138,6 +138,26 @@
     </div>
   </div>
 
+  <!-- Redeem Settings -->
+  <div class="card" style="margin-bottom:20px">
+    <h2>🎁 兌換設定</h2>
+    <div class="field">
+      <label>公告頻道 ID（留空 = 使用者所在頻道）</label>
+      <input type="text" id="redeem_channel" placeholder="例：1234567890" />
+    </div>
+    <div class="field">
+      <label>標記身分組 ID（留空 = 不標記）</label>
+      <input type="text" id="redeem_role" placeholder="例：1234567890" />
+    </div>
+    <div class="field">
+      <label>公告訊息模板（可用 {user} {item} {rarity} {role}）</label>
+      <input type="text" id="redeem_template" />
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveRedeem()">儲存</button>
+    </div>
+  </div>
+
   <!-- Work -->
   <div class="card" style="margin-bottom:20px">
     <h2>💼 打工地點</h2>
@@ -199,13 +219,18 @@
       <div class="field"><label>名稱</label><input type="text" id="new_adv_name" /></div>
       <div class="field">
         <label>消耗類型</label>
-        <select id="new_adv_cost_type">
+        <select id="new_adv_cost_type" onchange="toggleBetFields()">
           <option value="energy">精力</option>
-          <option value="tokens">代幣</option>
+          <option value="tokens">代幣（固定）</option>
+          <option value="custom_tokens">代幣（自選）</option>
         </select>
       </div>
-      <div class="field"><label>消耗數量</label><input type="number" id="new_adv_cost" /></div>
+      <div class="field" id="adv-cost-field"><label>消耗數量</label><input type="number" id="new_adv_cost" /></div>
       <div class="field"><label>成功率(%)</label><input type="number" id="new_adv_rate" min="0" max="100" /></div>
+    </div>
+    <div class="inline-fields" id="bet-range-fields" style="display:none;margin-top:8px">
+      <div class="field"><label>最小投入</label><input type="number" id="new_adv_min_bet" value="1" /></div>
+      <div class="field"><label>最大投入</label><input type="number" id="new_adv_max_bet" value="9999" /></div>
     </div>
     <div class="inline-fields" style="margin-top:8px">
       <div class="field">
@@ -267,6 +292,12 @@ async function loadConfig() {
   document.getElementById('weight_sr').value = c.rarity_weights.SR;
   document.getElementById('weight_ssr').value = c.rarity_weights.SSR;
 
+  // Redeem
+  const rd = c.redeem || {};
+  document.getElementById('redeem_channel').value = rd.channel_id || '';
+  document.getElementById('redeem_role').value = rd.role_id || '';
+  document.getElementById('redeem_template').value = rd.message_template || '';
+
   const wt = document.getElementById('work-table');
   wt.innerHTML = c.work.map(w => `<tr>
     <td>${w.name}</td><td>${w.duration_hours}h</td><td>${w.energy_cost}</td><td>${w.token_reward}</td>
@@ -288,14 +319,19 @@ async function loadConfig() {
   // Adventures
   const at = document.getElementById('adventure-table');
   at.innerHTML = (c.adventures || []).map(a => {
-    const costIcon = a.cost_type === 'energy' ? '⚡' : '🪙';
     const rate = Math.round(a.success_rate * 100);
     const sr = a.success_reward;
     const fr = a.failure_reward;
     const srStr = sr.type === 'fixed' ? `🪙 +${sr.amount || 0}` : `🪙 ×${sr.value}`;
     const frStr = fr.type === 'fixed' ? `🪙 +${fr.amount || 0}` : `🪙 ×${fr.value}`;
+    let costStr;
+    if (a.cost_type === 'custom_tokens') {
+      costStr = `🪙 自選 ${a.min_bet||1}~${a.max_bet||9999}`;
+    } else {
+      costStr = (a.cost_type === 'energy' ? '⚡' : '🪙') + ' ' + a.cost_amount;
+    }
     return `<tr>
-      <td>${a.name}</td><td>${costIcon} ${a.cost_amount}</td><td>${rate}%</td>
+      <td>${a.name}</td><td>${costStr}</td><td>${rate}%</td>
       <td>${srStr}</td><td>${frStr}</td>
       <td><button class="btn btn-danger btn-sm" onclick="deleteAdventure('${a.name}')">刪除</button></td>
     </tr>`;
@@ -317,6 +353,15 @@ async function saveTokens() {
     checkin_reset_hours: document.getElementById('checkin_reset').value,
   });
   toast('代幣設定已儲存');
+}
+
+async function saveRedeem() {
+  await api('POST', '/api/redeem', {
+    channel_id: document.getElementById('redeem_channel').value.trim(),
+    role_id: document.getElementById('redeem_role').value.trim(),
+    message_template: document.getElementById('redeem_template').value,
+  });
+  toast('兌換設定已儲存');
 }
 
 async function saveRarity() {
@@ -451,17 +496,29 @@ async function deletePreset() {
   loadPresets();
 }
 
+function toggleBetFields() {
+  const ct = document.getElementById('new_adv_cost_type').value;
+  document.getElementById('bet-range-fields').style.display = ct === 'custom_tokens' ? 'flex' : 'none';
+  document.getElementById('adv-cost-field').style.display = ct === 'custom_tokens' ? 'none' : '';
+}
+
 async function addAdventure() {
-  await api('POST', '/api/adventure', {
+  const costType = document.getElementById('new_adv_cost_type').value;
+  const body = {
     name: document.getElementById('new_adv_name').value,
-    cost_type: document.getElementById('new_adv_cost_type').value,
-    cost_amount: document.getElementById('new_adv_cost').value,
+    cost_type: costType,
+    cost_amount: costType === 'custom_tokens' ? '0' : document.getElementById('new_adv_cost').value,
     success_rate: document.getElementById('new_adv_rate').value,
     success_type: document.getElementById('new_adv_sr_type').value,
     success_value: document.getElementById('new_adv_sr_val').value,
     failure_type: document.getElementById('new_adv_fr_type').value,
     failure_value: document.getElementById('new_adv_fr_val').value,
-  });
+  };
+  if (costType === 'custom_tokens') {
+    body.min_bet = document.getElementById('new_adv_min_bet').value;
+    body.max_bet = document.getElementById('new_adv_max_bet').value;
+  }
+  await api('POST', '/api/adventure', body);
   document.getElementById('new_adv_name').value = '';
   document.getElementById('new_adv_cost').value = '';
   document.getElementById('new_adv_rate').value = '';

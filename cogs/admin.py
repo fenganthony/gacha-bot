@@ -147,13 +147,15 @@ class Admin(commands.Cog):
     @admin_group.command(name="新增冒險", description="新增冒險事件")
     @app_commands.describe(
         name="冒險名稱",
-        cost_type="消耗類型 (energy/tokens)",
-        cost_amount="消耗數量",
+        cost_type="消耗類型 (energy/tokens/custom_tokens)",
+        cost_amount="消耗數量（custom_tokens 填 0）",
         success_rate="成功率 (0-100)",
         success_type="成功獎勵類型 (fixed/multiplier)",
         success_value="成功獎勵數值（fixed=代幣數, multiplier=倍率）",
         failure_type="失敗獎勵類型 (fixed/multiplier)",
         failure_value="失敗獎勵數值",
+        min_bet="自選最小投入（僅 custom_tokens）",
+        max_bet="自選最大投入（僅 custom_tokens）",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def add_adventure(
@@ -161,10 +163,11 @@ class Admin(commands.Cog):
         name: str, cost_type: str, cost_amount: int, success_rate: int,
         success_type: str, success_value: float,
         failure_type: str, failure_value: float,
+        min_bet: int = None, max_bet: int = None,
     ):
         await interaction.response.defer()
-        if cost_type not in ("energy", "tokens"):
-            await interaction.followup.send("❌ cost_type 必須是 energy 或 tokens")
+        if cost_type not in ("energy", "tokens", "custom_tokens"):
+            await interaction.followup.send("❌ cost_type 必須是 energy、tokens 或 custom_tokens")
             return
         if success_type not in ("fixed", "multiplier") or failure_type not in ("fixed", "multiplier"):
             await interaction.followup.send("❌ 獎勵類型必須是 fixed 或 multiplier")
@@ -172,19 +175,33 @@ class Admin(commands.Cog):
         if not (0 <= success_rate <= 100):
             await interaction.followup.send("❌ 成功率必須在 0-100 之間")
             return
+        if cost_type == "custom_tokens":
+            if min_bet is None or max_bet is None:
+                await interaction.followup.send("❌ custom_tokens 類型必須設定 min_bet 和 max_bet")
+                return
+            if min_bet < 1 or max_bet < min_bet:
+                await interaction.followup.send("❌ min_bet 必須 ≥ 1，max_bet 必須 ≥ min_bet")
+                return
         if "adventures" not in self.config:
             self.config["adventures"] = []
-        self.config["adventures"].append({
+        adv = {
             "name": name,
             "cost_type": cost_type,
             "cost_amount": cost_amount,
             "success_rate": success_rate / 100,
             "success_reward": {"type": success_type, "amount" if success_type == "fixed" else "value": success_value},
             "failure_reward": {"type": failure_type, "amount" if failure_type == "fixed" else "value": failure_value},
-        })
+        }
+        if cost_type == "custom_tokens":
+            adv["min_bet"] = min_bet
+            adv["max_bet"] = max_bet
+        self.config["adventures"].append(adv)
         self.save_config()
-        cost_label = "精力" if cost_type == "energy" else "代幣"
-        await interaction.followup.send(f"✅ 已新增冒險：**{name}**（{cost_label} -{cost_amount}, 成功率 {success_rate}%）")
+        if cost_type == "custom_tokens":
+            await interaction.followup.send(f"✅ 已新增冒險：**{name}**（自選 {min_bet}~{max_bet} 代幣, 成功率 {success_rate}%）")
+        else:
+            cost_label = "精力" if cost_type == "energy" else "代幣"
+            await interaction.followup.send(f"✅ 已新增冒險：**{name}**（{cost_label} -{cost_amount}, 成功率 {success_rate}%）")
 
     @admin_group.command(name="刪除冒險", description="刪除冒險事件")
     @app_commands.describe(name="冒險名稱")
