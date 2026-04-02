@@ -27,5 +27,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_PATH = DATA_DIR / "config.json"
 EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
 DB_PATH = DATA_DIR / "gacha.db"
-PRESETS_PATH = DATA_DIR / "presets"
+GUILDS_DIR = DATA_DIR / "guilds"
+GUILDS_REGISTRY = DATA_DIR / "guilds.json"
 STATIC_PATH = APP_DIR / "static"

@@ -57,7 +57,11 @@
 
 <div class="header">
   <h1>🎰 轉蛋機器人 後台管理</h1>
-  <p>即時調整遊戲設定，變更會立即生效 ｜ <a href="/users" style="color:#fff;text-decoration:underline">👥 玩家管理</a></p>
+  <p style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <select id="guild-select" onchange="switchGuild()" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(0,0,0,0.2);color:#fff;font-size:13px;min-width:180px"></select>
+    <a href="/users" style="color:#fff;text-decoration:underline">👥 玩家管理</a>
+    <button class="btn btn-danger btn-sm" onclick="unregisterGuild()" style="font-size:11px">移除此伺服器</button>
+  </p>
 </div>
 
 <div class="container">
@@ -268,6 +272,7 @@
 
 <script>
 const API = '';
+let currentGuild = '';
 
 function toast(msg, isError) {
   const el = document.getElementById('toast');
@@ -277,11 +282,52 @@ function toast(msg, isError) {
 }
 
 async function api(method, path, body) {
+  let url = API + path;
+  if (path.startsWith('/api/') && path !== '/api/guilds' && currentGuild) {
+    const sep = url.includes('?') ? '&' : '?';
+    url += sep + 'guild=' + currentGuild;
+  }
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(API + path, opts);
+  const res = await fetch(url, opts);
   if (!res.ok) throw new Error('API error');
   return res.json();
+}
+
+async function loadGuilds() {
+  const guilds = await api('GET', '/api/guilds');
+  const sel = document.getElementById('guild-select');
+  if (!guilds.length) {
+    sel.innerHTML = '<option value="">-- 尚無伺服器 --</option>';
+    currentGuild = '';
+    return;
+  }
+  sel.innerHTML = guilds.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+  const saved = localStorage.getItem('selectedGuild');
+  if (saved && guilds.some(g => g.id === saved)) {
+    sel.value = saved;
+  }
+  currentGuild = sel.value;
+}
+
+function switchGuild() {
+  currentGuild = document.getElementById('guild-select').value;
+  localStorage.setItem('selectedGuild', currentGuild);
+  if (currentGuild) { loadConfig(); loadPresets(); loadActivity(); }
+}
+
+async function unregisterGuild() {
+  if (!currentGuild) return;
+  if (!confirm('確定要移除此伺服器？')) return;
+  const deleteData = confirm('是否同時刪除玩家資料？\n\n確定 = 刪除所有資料\n取消 = 僅移除設定');
+  await fetch('/api/guilds', {
+    method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({guild_id: currentGuild, delete_data: deleteData})
+  });
+  toast('伺服器已移除');
+  await loadGuilds();
+  if (currentGuild) switchGuild();
 }
 
 function badgeClass(r) {
@@ -554,9 +600,9 @@ async function deleteAdventure(name) {
   loadConfig();
 }
 
-loadConfig();
-loadPresets();
-loadActivity();
+loadGuilds().then(() => {
+  if (currentGuild) { loadConfig(); loadPresets(); loadActivity(); }
+});
 </script>
 </body>
 </html>

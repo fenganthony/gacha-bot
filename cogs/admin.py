@@ -5,17 +5,22 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import database as db
-from paths import CONFIG_PATH
+import guild_config as gc
 
 
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.config = bot.config
 
-    def save_config(self):
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, ensure_ascii=False, indent=2)
+    def _cfg(self, interaction: discord.Interaction) -> dict:
+        return self.bot.get_guild_config(str(interaction.guild_id))
+
+    def _gid(self, interaction: discord.Interaction) -> str:
+        return str(interaction.guild_id)
+
+    def _save(self, interaction: discord.Interaction):
+        gid = self._gid(interaction)
+        gc.save_guild_config(gid, self.bot.guild_configs[gid])
 
     admin_group = app_commands.Group(name="設定", description="管理員設定指令")
 
@@ -24,8 +29,9 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_max_energy(self, interaction: discord.Interaction, amount: int):
         await interaction.response.defer()
-        self.config["energy"]["max_amount"] = amount
-        self.save_config()
+        config = self._cfg(interaction)
+        config["energy"]["max_amount"] = amount
+        self._save(interaction)
         await interaction.followup.send(f"✅ 精力上限已設為 **{amount}**")
 
     @admin_group.command(name="每日精力", description="設定每日獲得精力")
@@ -33,8 +39,9 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_daily_energy(self, interaction: discord.Interaction, amount: int):
         await interaction.response.defer()
-        self.config["energy"]["daily_amount"] = amount
-        self.save_config()
+        config = self._cfg(interaction)
+        config["energy"]["daily_amount"] = amount
+        self._save(interaction)
         await interaction.followup.send(f"✅ 每日精力已設為 **{amount}**")
 
     @admin_group.command(name="扭蛋費用", description="設定扭蛋所需代幣")
@@ -42,8 +49,9 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_gacha_cost(self, interaction: discord.Interaction, amount: int):
         await interaction.response.defer()
-        self.config["tokens"]["gacha_cost"] = amount
-        self.save_config()
+        config = self._cfg(interaction)
+        config["tokens"]["gacha_cost"] = amount
+        self._save(interaction)
         await interaction.followup.send(f"✅ 扭蛋費用已設為 **{amount}** 代幣")
 
     @admin_group.command(name="簽到獎勵", description="設定簽到代幣獎勵")
@@ -51,8 +59,9 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_checkin_reward(self, interaction: discord.Interaction, amount: int):
         await interaction.response.defer()
-        self.config["tokens"]["checkin_reward"] = amount
-        self.save_config()
+        config = self._cfg(interaction)
+        config["tokens"]["checkin_reward"] = amount
+        self._save(interaction)
         await interaction.followup.send(f"✅ 簽到獎勵已設為 **{amount}** 代幣")
 
     @admin_group.command(name="簽到冷卻", description="設定簽到重置時間（小時）")
@@ -60,8 +69,9 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_checkin_cooldown(self, interaction: discord.Interaction, hours: int):
         await interaction.response.defer()
-        self.config["tokens"]["checkin_reset_hours"] = hours
-        self.save_config()
+        config = self._cfg(interaction)
+        config["tokens"]["checkin_reset_hours"] = hours
+        self._save(interaction)
         await interaction.followup.send(f"✅ 簽到冷卻已設為 **{hours}** 小時")
 
     @admin_group.command(name="新增打工", description="新增打工地點")
@@ -69,13 +79,14 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def add_work(self, interaction: discord.Interaction, name: str, hours: int, energy: int, reward: int):
         await interaction.response.defer()
-        self.config["work"].append({
+        config = self._cfg(interaction)
+        config["work"].append({
             "name": name,
             "duration_hours": hours,
             "energy_cost": energy,
             "token_reward": reward,
         })
-        self.save_config()
+        self._save(interaction)
         await interaction.followup.send(f"✅ 已新增打工地點：**{name}**（⏱{hours}h ⚡-{energy} 🪙+{reward}）")
 
     @admin_group.command(name="刪除打工", description="刪除打工地點")
@@ -83,12 +94,13 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def remove_work(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-        before = len(self.config["work"])
-        self.config["work"] = [w for w in self.config["work"] if w["name"] != name]
-        if len(self.config["work"]) == before:
+        config = self._cfg(interaction)
+        before = len(config["work"])
+        config["work"] = [w for w in config["work"] if w["name"] != name]
+        if len(config["work"]) == before:
             await interaction.followup.send(f"❌ 找不到打工地點：**{name}**")
             return
-        self.save_config()
+        self._save(interaction)
         await interaction.followup.send(f"✅ 已刪除打工地點：**{name}**")
 
     @admin_group.command(name="新增獎品", description="新增扭蛋獎品（秘藏需設定權重）")
@@ -96,6 +108,7 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def add_prize(self, interaction: discord.Interaction, name: str, rarity: str, weight: int = None):
         await interaction.response.defer()
+        config = self._cfg(interaction)
         valid = ("N", "R", "SR", "SSR", "秘藏")
         if rarity.upper() not in valid and rarity not in valid:
             await interaction.followup.send("❌ 稀有度必須是 N、R、SR、SSR 或 秘藏")
@@ -107,8 +120,8 @@ class Admin(commands.Cog):
         item = {"name": name, "rarity": r}
         if r == "秘藏":
             item["weight"] = weight
-        self.config["gacha_pool"].append(item)
-        self.save_config()
+        config["gacha_pool"].append(item)
+        self._save(interaction)
         msg = f"✅ 已新增獎品：`{r}` **{name}**"
         if r == "秘藏":
             msg += f"（權重 {weight}）"
@@ -119,13 +132,14 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_rarity_weight(self, interaction: discord.Interaction, rarity: str, weight: int):
         await interaction.response.defer()
+        config = self._cfg(interaction)
         r = rarity.upper()
         if r not in ("N", "R", "SR", "SSR"):
             await interaction.followup.send("❌ 只能設定 N、R、SR、SSR 的權重（秘藏請用 新增獎品 時設定）")
             return
-        self.config["rarity_weights"][r] = weight
-        self.save_config()
-        rw = self.config["rarity_weights"]
+        config["rarity_weights"][r] = weight
+        self._save(interaction)
+        rw = config["rarity_weights"]
         lines = " / ".join(f"{k}={v}" for k, v in rw.items())
         await interaction.followup.send(f"✅ `{r}` 權重已設為 **{weight}**\n目前權重：{lines}")
 
@@ -134,12 +148,13 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def remove_prize(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-        before = len(self.config["gacha_pool"])
-        self.config["gacha_pool"] = [p for p in self.config["gacha_pool"] if p["name"] != name]
-        if len(self.config["gacha_pool"]) == before:
+        config = self._cfg(interaction)
+        before = len(config["gacha_pool"])
+        config["gacha_pool"] = [p for p in config["gacha_pool"] if p["name"] != name]
+        if len(config["gacha_pool"]) == before:
             await interaction.followup.send(f"❌ 找不到獎品：**{name}**")
             return
-        self.save_config()
+        self._save(interaction)
         await interaction.followup.send(f"✅ 已刪除獎品：**{name}**")
 
     @admin_group.command(name="新增冒險", description="新增冒險事件")
@@ -164,6 +179,7 @@ class Admin(commands.Cog):
         min_bet: int = None, max_bet: int = None,
     ):
         await interaction.response.defer()
+        config = self._cfg(interaction)
         if cost_type not in ("energy", "tokens", "custom_tokens"):
             await interaction.followup.send("❌ cost_type 必須是 energy、tokens 或 custom_tokens")
             return
@@ -180,8 +196,8 @@ class Admin(commands.Cog):
             if min_bet < 1 or max_bet < min_bet:
                 await interaction.followup.send("❌ min_bet 必須 ≥ 1，max_bet 必須 ≥ min_bet")
                 return
-        if "adventures" not in self.config:
-            self.config["adventures"] = []
+        if "adventures" not in config:
+            config["adventures"] = []
         adv = {
             "name": name,
             "cost_type": cost_type,
@@ -193,8 +209,8 @@ class Admin(commands.Cog):
         if cost_type == "custom_tokens":
             adv["min_bet"] = min_bet
             adv["max_bet"] = max_bet
-        self.config["adventures"].append(adv)
-        self.save_config()
+        config["adventures"].append(adv)
+        self._save(interaction)
         if cost_type == "custom_tokens":
             await interaction.followup.send(f"✅ 已新增冒險：**{name}**（自選 {min_bet}~{max_bet} 代幣, 成功率 {success_rate}%）")
         else:
@@ -206,13 +222,14 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def remove_adventure(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer()
-        adventures = self.config.get("adventures", [])
+        config = self._cfg(interaction)
+        adventures = config.get("adventures", [])
         before = len(adventures)
-        self.config["adventures"] = [a for a in adventures if a["name"] != name]
-        if len(self.config["adventures"]) == before:
+        config["adventures"] = [a for a in adventures if a["name"] != name]
+        if len(config["adventures"]) == before:
             await interaction.followup.send(f"❌ 找不到冒險：**{name}**")
             return
-        self.save_config()
+        self._save(interaction)
         await interaction.followup.send(f"✅ 已刪除冒險：**{name}**")
 
     @admin_group.command(name="管理角色", description="設定可使用管理指令的角色")
@@ -220,14 +237,17 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def set_admin_role(self, interaction: discord.Interaction, role: discord.Role):
         await interaction.response.defer()
-        self.config["admin_role"] = str(role.id)
-        self.save_config()
+        config = self._cfg(interaction)
+        config["admin_role"] = str(role.id)
+        self._save(interaction)
         await interaction.followup.send(f"✅ 管理角色已設為 **{role.name}**")
 
     @app_commands.command(name="查看玩家", description="查看指定玩家的狀態（需要管理角色）")
     @app_commands.describe(member="要查看的玩家")
     async def view_player(self, interaction: discord.Interaction, member: discord.Member):
-        admin_role_id = self.config.get("admin_role", "")
+        config = self._cfg(interaction)
+        gid = self._gid(interaction)
+        admin_role_id = config.get("admin_role", "")
         has_admin_role = any(str(r.id) == admin_role_id for r in interaction.user.roles) if admin_role_id else False
         is_admin = interaction.user.guild_permissions.administrator
         if not has_admin_role and not is_admin:
@@ -235,7 +255,7 @@ class Admin(commands.Cog):
             return
 
         await interaction.response.defer()
-        status = await asyncio.to_thread(db.get_status, str(member.id), self.config)
+        status = await asyncio.to_thread(db.get_status, gid, str(member.id), config)
         embed = discord.Embed(title=f"📊 {member.display_name} 的狀態", color=0x1ABC9C)
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(name="⚡ 精力", value=f"{status['energy']} / {status['max_energy']}", inline=True)
@@ -254,7 +274,7 @@ class Admin(commands.Cog):
                 value=f"{status['uncollected']['work_name']} — 🪙 {status['uncollected']['token_reward']} 代幣",
                 inline=False,
             )
-        items = await asyncio.to_thread(db.get_inventory, str(member.id))
+        items = await asyncio.to_thread(db.get_inventory, gid, str(member.id))
         if items:
             lines = [f"`{item['rarity']}` {item['item_name']} ×{item['count']}" for item in items]
             embed.add_field(name="🎒 背包", value="\n".join(lines), inline=False)
@@ -264,7 +284,7 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def view_config(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        c = self.config
+        c = self._cfg(interaction)
         work_lines = "\n".join(
             f"  • **{w['name']}** — ⏱{w['duration_hours']}h ⚡-{w['energy_cost']} 🪙+{w['token_reward']}"
             for w in c["work"]

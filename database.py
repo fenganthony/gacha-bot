@@ -19,15 +19,18 @@ def init_db():
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
                 energy INTEGER DEFAULT 0,
                 tokens INTEGER DEFAULT 0,
                 event_tokens INTEGER DEFAULT 0,
                 last_checkin REAL DEFAULT 0,
-                last_energy_refresh REAL DEFAULT 0
+                last_energy_refresh REAL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS work_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 work_name TEXT NOT NULL,
                 start_time REAL NOT NULL,
@@ -37,20 +40,63 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS inventory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 rarity TEXT NOT NULL,
                 obtained_at REAL NOT NULL
             );
         """)
-        # Migration: add event_tokens column if missing
-        cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "event_tokens" not in cols:
-            conn.execute("ALTER TABLE users ADD COLUMN event_tokens INTEGER DEFAULT 0")
+        _migrate(conn)
 
+
+def _migrate(conn):
+    """Handle schema migrations from older versions."""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+
+    if "guild_id" not in cols:
+        # Legacy single-guild schema -> multi-guild
+        conn.executescript("""
+            ALTER TABLE users RENAME TO _users_old;
+            CREATE TABLE users (
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                energy INTEGER DEFAULT 0,
+                tokens INTEGER DEFAULT 0,
+                event_tokens INTEGER DEFAULT 0,
+                last_checkin REAL DEFAULT 0,
+                last_energy_refresh REAL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            INSERT INTO users (guild_id, user_id, energy, tokens, event_tokens, last_checkin, last_energy_refresh)
+                SELECT 'legacy', user_id, energy, tokens,
+                       COALESCE(event_tokens, 0), last_checkin, last_energy_refresh
+                FROM _users_old;
+            DROP TABLE _users_old;
+        """)
+        conn.execute("ALTER TABLE work_sessions ADD COLUMN guild_id TEXT NOT NULL DEFAULT 'legacy'")
+        conn.execute("ALTER TABLE inventory ADD COLUMN guild_id TEXT NOT NULL DEFAULT 'legacy'")
+    elif "event_tokens" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN event_tokens INTEGER DEFAULT 0")
+
+
+def reassign_legacy_data(new_guild_id: str):
+    """Move all 'legacy' guild_id rows to a real guild."""
+    with get_conn() as conn:
+        for table in ("users", "work_sessions", "inventory"):
+            conn.execute(f"UPDATE {table} SET guild_id = ? WHERE guild_id = 'legacy'", (new_guild_id,))
+
+
+def delete_guild_data(guild_id: str):
+    """Delete all data for a guild."""
+    with get_conn() as conn:
+        for table in ("users", "work_sessions", "inventory"):
+            conn.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+
+
+# --- Helpers ---
 
 def _token_col(config: dict) -> str:
-    """Return the token column name based on activity mode."""
     if config.get("activity", {}).get("active", False):
         return "event_tokens"
     return "tokens"
@@ -62,38 +108,48 @@ def _token_label(config: dict) -> str:
     return "代幣"
 
 
-def get_user(user_id: str, config: dict) -> dict:
+# --- User ---
+
+def get_user(guild_id: str, user_id: str, config: dict) -> dict:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM users WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        ).fetchone()
         if row is None:
             now = time.time()
             initial_event = config.get("activity", {}).get("initial_event_tokens", 0) if config.get("activity", {}).get("active", False) else 0
             conn.execute(
-                "INSERT INTO users (user_id, energy, tokens, event_tokens, last_checkin, last_energy_refresh) VALUES (?, ?, 0, ?, 0, ?)",
-                (user_id, config["energy"]["daily_amount"], initial_event, now),
+                "INSERT INTO users (guild_id, user_id, energy, tokens, event_tokens, last_checkin, last_energy_refresh) VALUES (?, ?, ?, 0, ?, 0, ?)",
+                (guild_id, user_id, config["energy"]["daily_amount"], initial_event, now),
             )
-            row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM users WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            ).fetchone()
         return dict(row)
 
 
-def refresh_energy(user_id: str, config: dict) -> dict:
-    user = get_user(user_id, config)
+def refresh_energy(guild_id: str, user_id: str, config: dict) -> dict:
+    user = get_user(guild_id, user_id, config)
     now = time.time()
     elapsed = now - user["last_energy_refresh"]
     if elapsed >= 86400:
         new_energy = min(user["energy"] + config["energy"]["daily_amount"], config["energy"]["max_amount"])
         with get_conn() as conn:
             conn.execute(
-                "UPDATE users SET energy = ?, last_energy_refresh = ? WHERE user_id = ?",
-                (new_energy, now, user_id),
+                "UPDATE users SET energy = ?, last_energy_refresh = ? WHERE guild_id = ? AND user_id = ?",
+                (new_energy, now, guild_id, user_id),
             )
         user["energy"] = new_energy
         user["last_energy_refresh"] = now
     return user
 
 
-def checkin(user_id: str, config: dict) -> tuple[bool, str]:
-    user = refresh_energy(user_id, config)
+# --- Checkin ---
+
+def checkin(guild_id: str, user_id: str, config: dict) -> tuple[bool, str]:
+    user = refresh_energy(guild_id, user_id, config)
     now = time.time()
     reset_seconds = config["tokens"]["checkin_reset_hours"] * 3600
     if now - user["last_checkin"] < reset_seconds:
@@ -106,19 +162,21 @@ def checkin(user_id: str, config: dict) -> tuple[bool, str]:
     label = _token_label(config)
     with get_conn() as conn:
         conn.execute(
-            f"UPDATE users SET {col} = {col} + ?, last_checkin = ? WHERE user_id = ?",
-            (reward, now, user_id),
+            f"UPDATE users SET {col} = {col} + ?, last_checkin = ? WHERE guild_id = ? AND user_id = ?",
+            (reward, now, guild_id, user_id),
         )
     return True, f"簽到成功！獲得 {reward} {label}"
 
 
-def start_work(user_id: str, work_cfg: dict, config: dict) -> tuple[bool, str]:
-    user = refresh_energy(user_id, config)
+# --- Work ---
+
+def start_work(guild_id: str, user_id: str, work_cfg: dict, config: dict) -> tuple[bool, str]:
+    user = refresh_energy(guild_id, user_id, config)
     label = _token_label(config)
     with get_conn() as conn:
         active = conn.execute(
-            "SELECT * FROM work_sessions WHERE user_id = ? AND collected = 0 AND end_time > ?",
-            (user_id, time.time()),
+            "SELECT * FROM work_sessions WHERE guild_id = ? AND user_id = ? AND collected = 0 AND end_time > ?",
+            (guild_id, user_id, time.time()),
         ).fetchone()
         if active:
             remaining = active["end_time"] - time.time()
@@ -129,39 +187,44 @@ def start_work(user_id: str, work_cfg: dict, config: dict) -> tuple[bool, str]:
         now = time.time()
         end_time = now + work_cfg["duration_hours"] * 3600
         conn.execute(
-            "UPDATE users SET energy = energy - ? WHERE user_id = ?",
-            (work_cfg["energy_cost"], user_id),
+            "UPDATE users SET energy = energy - ? WHERE guild_id = ? AND user_id = ?",
+            (work_cfg["energy_cost"], guild_id, user_id),
         )
         conn.execute(
-            "INSERT INTO work_sessions (user_id, work_name, start_time, end_time, token_reward) VALUES (?, ?, ?, ?, ?)",
-            (user_id, work_cfg["name"], now, end_time, work_cfg["token_reward"]),
+            "INSERT INTO work_sessions (guild_id, user_id, work_name, start_time, end_time, token_reward) VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, user_id, work_cfg["name"], now, end_time, work_cfg["token_reward"]),
         )
     return True, f"開始在 **{work_cfg['name']}** 打工！需要 {work_cfg['duration_hours']} 小時，完成後可領取 {work_cfg['token_reward']} {label}"
 
 
-def collect_work(user_id: str, config: dict) -> tuple[bool, str]:
+def collect_work(guild_id: str, user_id: str, config: dict) -> tuple[bool, str]:
     now = time.time()
     col = _token_col(config)
     label = _token_label(config)
     with get_conn() as conn:
         session = conn.execute(
-            "SELECT * FROM work_sessions WHERE user_id = ? AND collected = 0 AND end_time <= ? ORDER BY end_time DESC LIMIT 1",
-            (user_id, now),
+            "SELECT * FROM work_sessions WHERE guild_id = ? AND user_id = ? AND collected = 0 AND end_time <= ? ORDER BY end_time DESC LIMIT 1",
+            (guild_id, user_id, now),
         ).fetchone()
         if session is None:
             active = conn.execute(
-                "SELECT * FROM work_sessions WHERE user_id = ? AND collected = 0 AND end_time > ?",
-                (user_id, now),
+                "SELECT * FROM work_sessions WHERE guild_id = ? AND user_id = ? AND collected = 0 AND end_time > ?",
+                (guild_id, user_id, now),
             ).fetchone()
             if active:
                 remaining = active["end_time"] - now
                 minutes = int(remaining // 60)
                 return False, f"打工尚未完成，還需 {minutes} 分鐘"
             return False, "沒有可領取的打工報酬"
-        conn.execute(f"UPDATE users SET {col} = {col} + ? WHERE user_id = ?", (session["token_reward"], user_id))
+        conn.execute(
+            f"UPDATE users SET {col} = {col} + ? WHERE guild_id = ? AND user_id = ?",
+            (session["token_reward"], guild_id, user_id),
+        )
         conn.execute("UPDATE work_sessions SET collected = 1 WHERE id = ?", (session["id"],))
     return True, f"領取成功！從 **{session['work_name']}** 獲得 {session['token_reward']} {label}"
 
+
+# --- Gacha ---
 
 def calc_item_probabilities(config: dict) -> list[dict]:
     rarity_weights = config["rarity_weights"]
@@ -183,9 +246,9 @@ def calc_item_probabilities(config: dict) -> list[dict]:
     return results
 
 
-def do_gacha(user_id: str, config: dict) -> tuple[bool, str, dict | None]:
+def do_gacha(guild_id: str, user_id: str, config: dict) -> tuple[bool, str, dict | None]:
     import random
-    user = refresh_energy(user_id, config)
+    user = refresh_energy(guild_id, user_id, config)
     cost = config["tokens"]["gacha_cost"]
     col = _token_col(config)
     label = _token_label(config)
@@ -197,17 +260,22 @@ def do_gacha(user_id: str, config: dict) -> tuple[bool, str, dict | None]:
     prize = random.choices(items_with_prob, weights=weights, k=1)[0]
     now = time.time()
     with get_conn() as conn:
-        conn.execute(f"UPDATE users SET {col} = {col} - ? WHERE user_id = ?", (cost, user_id))
         conn.execute(
-            "INSERT INTO inventory (user_id, item_name, rarity, obtained_at) VALUES (?, ?, ?, ?)",
-            (user_id, prize["name"], prize["rarity"], now),
+            f"UPDATE users SET {col} = {col} - ? WHERE guild_id = ? AND user_id = ?",
+            (cost, guild_id, user_id),
+        )
+        conn.execute(
+            "INSERT INTO inventory (guild_id, user_id, item_name, rarity, obtained_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, user_id, prize["name"], prize["rarity"], now),
         )
     return True, f"消耗 {cost} {label}", prize
 
 
-def do_adventure(user_id: str, adventure: dict, config: dict) -> dict:
+# --- Adventure ---
+
+def do_adventure(guild_id: str, user_id: str, adventure: dict, config: dict) -> dict:
     import random
-    user = refresh_energy(user_id, config)
+    user = refresh_energy(guild_id, user_id, config)
     cost_type = adventure["cost_type"]
     cost_amount = adventure["cost_amount"]
     col = _token_col(config)
@@ -223,9 +291,15 @@ def do_adventure(user_id: str, adventure: dict, config: dict) -> dict:
 
     with get_conn() as conn:
         if cost_type == "energy":
-            conn.execute("UPDATE users SET energy = energy - ? WHERE user_id = ?", (cost_amount, user_id))
+            conn.execute(
+                "UPDATE users SET energy = energy - ? WHERE guild_id = ? AND user_id = ?",
+                (cost_amount, guild_id, user_id),
+            )
         else:
-            conn.execute(f"UPDATE users SET {col} = {col} - ? WHERE user_id = ?", (cost_amount, user_id))
+            conn.execute(
+                f"UPDATE users SET {col} = {col} - ? WHERE guild_id = ? AND user_id = ?",
+                (cost_amount, guild_id, user_id),
+            )
 
     success = random.random() < adventure["success_rate"]
     reward_cfg = adventure["success_reward"] if success else adventure["failure_reward"]
@@ -236,7 +310,10 @@ def do_adventure(user_id: str, adventure: dict, config: dict) -> dict:
 
     if reward_amount > 0:
         with get_conn() as conn:
-            conn.execute(f"UPDATE users SET {col} = {col} + ? WHERE user_id = ?", (reward_amount, user_id))
+            conn.execute(
+                f"UPDATE users SET {col} = {col} + ? WHERE guild_id = ? AND user_id = ?",
+                (reward_amount, guild_id, user_id),
+            )
 
     cost_label = "精力" if cost_type == "energy" else label
     return {
@@ -250,12 +327,13 @@ def do_adventure(user_id: str, adventure: dict, config: dict) -> dict:
     }
 
 
-def redeem_item(user_id: str, item_name: str, rarity: str) -> bool:
-    """Remove one copy of an item from inventory. Returns True if successful."""
+# --- Inventory & Redeem ---
+
+def redeem_item(guild_id: str, user_id: str, item_name: str, rarity: str) -> bool:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id FROM inventory WHERE user_id = ? AND item_name = ? AND rarity = ? LIMIT 1",
-            (user_id, item_name, rarity),
+            "SELECT id FROM inventory WHERE guild_id = ? AND user_id = ? AND item_name = ? AND rarity = ? LIMIT 1",
+            (guild_id, user_id, item_name, rarity),
         ).fetchone()
         if row is None:
             return False
@@ -263,27 +341,29 @@ def redeem_item(user_id: str, item_name: str, rarity: str) -> bool:
     return True
 
 
-def get_inventory(user_id: str) -> list[dict]:
+def get_inventory(guild_id: str, user_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT item_name, rarity, COUNT(*) as count FROM inventory WHERE user_id = ? GROUP BY item_name, rarity ORDER BY rarity, item_name",
-            (user_id,),
+            "SELECT item_name, rarity, COUNT(*) as count FROM inventory WHERE guild_id = ? AND user_id = ? GROUP BY item_name, rarity ORDER BY rarity, item_name",
+            (guild_id, user_id),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def get_status(user_id: str, config: dict) -> dict:
-    user = refresh_energy(user_id, config)
+# --- Status ---
+
+def get_status(guild_id: str, user_id: str, config: dict) -> dict:
+    user = refresh_energy(guild_id, user_id, config)
     with get_conn() as conn:
         active_work = conn.execute(
-            "SELECT * FROM work_sessions WHERE user_id = ? AND collected = 0 AND end_time > ?",
-            (user_id, time.time()),
+            "SELECT * FROM work_sessions WHERE guild_id = ? AND user_id = ? AND collected = 0 AND end_time > ?",
+            (guild_id, user_id, time.time()),
         ).fetchone()
         uncollected = conn.execute(
-            "SELECT * FROM work_sessions WHERE user_id = ? AND collected = 0 AND end_time <= ?",
-            (user_id, time.time()),
+            "SELECT * FROM work_sessions WHERE guild_id = ? AND user_id = ? AND collected = 0 AND end_time <= ?",
+            (guild_id, user_id, time.time()),
         ).fetchone()
-    result = {
+    return {
         "energy": user["energy"],
         "max_energy": config["energy"]["max_amount"],
         "tokens": user["tokens"],
@@ -292,34 +372,33 @@ def get_status(user_id: str, config: dict) -> dict:
         "working": dict(active_work) if active_work else None,
         "uncollected": dict(uncollected) if uncollected else None,
     }
-    return result
 
 
 # --- Activity Mode ---
 
-def activate_event(config: dict):
-    """Start activity mode: give all existing users initial event tokens."""
+def activate_event(guild_id: str, config: dict):
     initial = config.get("activity", {}).get("initial_event_tokens", 0)
     with get_conn() as conn:
-        conn.execute("UPDATE users SET event_tokens = ?", (initial,))
+        conn.execute("UPDATE users SET event_tokens = ? WHERE guild_id = ?", (initial, guild_id))
 
 
-def deactivate_event():
-    """End activity mode: clear all event tokens."""
+def deactivate_event(guild_id: str):
     with get_conn() as conn:
-        conn.execute("UPDATE users SET event_tokens = 0")
+        conn.execute("UPDATE users SET event_tokens = 0 WHERE guild_id = ?", (guild_id,))
 
 
 # --- User Management ---
 
-def get_all_users(config: dict) -> list[dict]:
+def get_all_users(guild_id: str, config: dict) -> list[dict]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM users ORDER BY user_id").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM users WHERE guild_id = ? ORDER BY user_id",
+            (guild_id,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
-def update_user(user_id: str, data: dict):
-    """Update specific fields for a user."""
+def update_user(guild_id: str, user_id: str, data: dict):
     allowed = ("energy", "tokens", "event_tokens")
     sets = []
     vals = []
@@ -329,6 +408,6 @@ def update_user(user_id: str, data: dict):
             vals.append(int(data[key]))
     if not sets:
         return
-    vals.append(user_id)
+    vals.extend([guild_id, user_id])
     with get_conn() as conn:
-        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE user_id = ?", vals)
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE guild_id = ? AND user_id = ?", vals)

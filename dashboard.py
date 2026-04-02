@@ -3,25 +3,57 @@ import copy
 import time
 from aiohttp import web
 import database as db
-from paths import CONFIG_PATH, STATIC_PATH, PRESETS_PATH
+import guild_config as gc
+from paths import STATIC_PATH
 
 
-def save_config(config: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-
-
-def create_app(config: dict) -> web.Application:
+def create_app(bot) -> web.Application:
     app = web.Application()
-    app["config"] = config
+    app["bot"] = bot
+
+    def _get_guild(request) -> tuple[str, dict]:
+        """Extract guild_id from query params, return (guild_id, config)."""
+        gid = request.query.get("guild", "")
+        if not gid or gid not in bot.guild_configs:
+            raise web.HTTPBadRequest(text="Missing or invalid guild parameter")
+        return gid, bot.guild_configs[gid]
+
+    def _save(gid: str):
+        gc.save_guild_config(gid, bot.guild_configs[gid])
 
     # --- Pages ---
     async def index(request):
         return web.FileResponse(STATIC_PATH / "index.html")
 
+    async def users_page(request):
+        return web.FileResponse(STATIC_PATH / "users.html")
+
+    # --- API: Guilds ---
+    async def list_guilds(request):
+        registry = gc.load_registry()
+        guilds = []
+        for gid, info in registry.items():
+            guilds.append({
+                "id": gid,
+                "name": info.get("name", gid),
+                "joined_at": info.get("joined_at", ""),
+            })
+        return web.json_response(guilds)
+
+    async def unregister_guild(request):
+        data = await request.json()
+        gid = data.get("guild_id", "")
+        delete_data = data.get("delete_data", False)
+        if gid in bot.guild_configs:
+            del bot.guild_configs[gid]
+        gc.unregister_guild(gid, delete_data=delete_data)
+        if delete_data:
+            db.delete_guild_data(gid)
+        return web.json_response({"ok": True})
+
     # --- API: Read config ---
     async def get_config(request):
-        c = app["config"]
+        gid, c = _get_guild(request)
         items = db.calc_item_probabilities(c)
         return web.json_response({
             "energy": c["energy"],
@@ -37,80 +69,80 @@ def create_app(config: dict) -> web.Application:
 
     # --- API: Update energy ---
     async def update_energy(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         if "daily_amount" in data:
             c["energy"]["daily_amount"] = int(data["daily_amount"])
         if "max_amount" in data:
             c["energy"]["max_amount"] = int(data["max_amount"])
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Update tokens ---
     async def update_tokens(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         if "gacha_cost" in data:
             c["tokens"]["gacha_cost"] = int(data["gacha_cost"])
         if "checkin_reward" in data:
             c["tokens"]["checkin_reward"] = int(data["checkin_reward"])
         if "checkin_reset_hours" in data:
             c["tokens"]["checkin_reset_hours"] = int(data["checkin_reset_hours"])
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Update rarity weights ---
     async def update_rarity(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         for key in ("N", "R", "SR", "SSR"):
             if key in data:
                 c["rarity_weights"][key] = int(data[key])
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Work CRUD ---
     async def add_work(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         c["work"].append({
             "name": data["name"],
             "duration_hours": int(data["duration_hours"]),
             "energy_cost": int(data["energy_cost"]),
             "token_reward": int(data["token_reward"]),
         })
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     async def delete_work(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         c["work"] = [w for w in c["work"] if w["name"] != data["name"]]
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Gacha pool CRUD ---
     async def add_prize(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         item = {"name": data["name"], "rarity": data["rarity"]}
         if data["rarity"] == "秘藏":
             item["weight"] = int(data.get("weight", 1))
         c["gacha_pool"].append(item)
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     async def delete_prize(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         c["gacha_pool"] = [p for p in c["gacha_pool"] if p["name"] != data["name"]]
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Adventure CRUD ---
     async def add_adventure(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         if "adventures" not in c:
             c["adventures"] = []
         sr_type = data.get("success_type", "fixed")
@@ -127,20 +159,20 @@ def create_app(config: dict) -> web.Application:
             adv["min_bet"] = int(data.get("min_bet", 1))
             adv["max_bet"] = int(data.get("max_bet", 9999))
         c["adventures"].append(adv)
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     async def delete_adventure(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         c["adventures"] = [a for a in c.get("adventures", []) if a["name"] != data["name"]]
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: Channel & notification settings ---
     async def update_redeem(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         if "channel_limits" in data:
             if "channel_limits" not in c:
                 c["channel_limits"] = {}
@@ -152,16 +184,18 @@ def create_app(config: dict) -> web.Application:
         for key in ("channel_id", "role_id", "message_template"):
             if key in data:
                 c["redeem"][key] = data[key]
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
-    # --- API: Presets ---
+    # --- API: Presets (per-guild) ---
     SAVEABLE_KEYS = ("energy", "tokens", "rarity_weights", "work", "gacha_pool", "adventures")
 
     async def list_presets(request):
-        PRESETS_PATH.mkdir(exist_ok=True)
+        gid, c = _get_guild(request)
+        presets_path = gc.guild_presets_path(gid)
+        presets_path.mkdir(parents=True, exist_ok=True)
         presets = []
-        for f in sorted(PRESETS_PATH.glob("*.json")):
+        for f in sorted(presets_path.glob("*.json")):
             with open(f, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             presets.append({
@@ -172,83 +206,84 @@ def create_app(config: dict) -> web.Application:
         return web.json_response(presets)
 
     async def save_preset(request):
+        gid, c = _get_guild(request)
         data = await request.json()
         name = data.get("name", "").strip()
         if not name:
             return web.json_response({"ok": False, "msg": "名稱不可為空"}, status=400)
-        PRESETS_PATH.mkdir(exist_ok=True)
-        c = app["config"]
+        presets_path = gc.guild_presets_path(gid)
+        presets_path.mkdir(parents=True, exist_ok=True)
         preset = {"name": name, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S")}
         for key in SAVEABLE_KEYS:
             if key in c:
                 preset[key] = copy.deepcopy(c[key])
         filename = name.replace("/", "_").replace("\\", "_")
-        with open(PRESETS_PATH / f"{filename}.json", "w", encoding="utf-8") as f:
+        with open(presets_path / f"{filename}.json", "w", encoding="utf-8") as f:
             json.dump(preset, f, ensure_ascii=False, indent=2)
         return web.json_response({"ok": True})
 
     async def load_preset(request):
+        gid, c = _get_guild(request)
         data = await request.json()
         filename = data.get("filename", "")
-        path = PRESETS_PATH / f"{filename}.json"
+        presets_path = gc.guild_presets_path(gid)
+        path = presets_path / f"{filename}.json"
         if not path.exists():
             return web.json_response({"ok": False, "msg": "找不到該組合"}, status=404)
         with open(path, "r", encoding="utf-8") as f:
             preset = json.load(f)
-        c = app["config"]
         for key in SAVEABLE_KEYS:
             if key in preset:
                 c[key] = copy.deepcopy(preset[key])
-        save_config(c)
+        _save(gid)
         return web.json_response({"ok": True})
 
     async def delete_preset(request):
+        gid, c = _get_guild(request)
         data = await request.json()
         filename = data.get("filename", "")
-        path = PRESETS_PATH / f"{filename}.json"
+        presets_path = gc.guild_presets_path(gid)
+        path = presets_path / f"{filename}.json"
         if path.exists():
             path.unlink()
         return web.json_response({"ok": True})
 
     # --- API: Activity Mode ---
     async def get_activity(request):
-        c = app["config"]
+        gid, c = _get_guild(request)
         return web.json_response(c.get("activity", {"active": False, "name": "", "initial_event_tokens": 0}))
 
     async def toggle_activity(request):
+        gid, c = _get_guild(request)
         data = await request.json()
-        c = app["config"]
         if "activity" not in c:
             c["activity"] = {"active": False, "name": "", "initial_event_tokens": 0}
         activate = data.get("active", False)
         if activate and not c["activity"]["active"]:
-            # Turning ON
             c["activity"]["active"] = True
             c["activity"]["name"] = data.get("name", "活動")
             c["activity"]["initial_event_tokens"] = int(data.get("initial_event_tokens", 0))
-            db.activate_event(c)
+            db.activate_event(gid, c)
         elif not activate and c["activity"]["active"]:
-            # Turning OFF
             c["activity"]["active"] = False
-            db.deactivate_event()
-        save_config(c)
+            db.deactivate_event(gid)
+        _save(gid)
         return web.json_response({"ok": True})
 
     # --- API: User Management ---
     async def get_users(request):
-        users = db.get_all_users(app["config"])
+        gid, c = _get_guild(request)
+        users = db.get_all_users(gid, c)
         return web.json_response(users)
 
     async def update_user_api(request):
+        gid, c = _get_guild(request)
         data = await request.json()
         user_id = data.pop("user_id", None)
         if not user_id:
             return web.json_response({"ok": False}, status=400)
-        db.update_user(user_id, data)
+        db.update_user(gid, user_id, data)
         return web.json_response({"ok": True})
-
-    async def users_page(request):
-        return web.FileResponse(STATIC_PATH / "users.html")
 
     # --- API: Health check ---
     async def health(request):
@@ -256,6 +291,8 @@ def create_app(config: dict) -> web.Application:
 
     app.router.add_get("/", index)
     app.router.add_get("/users", users_page)
+    app.router.add_get("/api/guilds", list_guilds)
+    app.router.add_delete("/api/guilds", unregister_guild)
     app.router.add_get("/api/config", get_config)
     app.router.add_post("/api/energy", update_energy)
     app.router.add_post("/api/tokens", update_tokens)
@@ -265,8 +302,8 @@ def create_app(config: dict) -> web.Application:
     app.router.add_post("/api/prize", add_prize)
     app.router.add_delete("/api/prize", delete_prize)
     app.router.add_post("/api/adventure", add_adventure)
-    app.router.add_post("/api/redeem", update_redeem)
     app.router.add_delete("/api/adventure", delete_adventure)
+    app.router.add_post("/api/redeem", update_redeem)
     app.router.add_get("/api/presets", list_presets)
     app.router.add_post("/api/presets", save_preset)
     app.router.add_post("/api/presets/load", load_preset)

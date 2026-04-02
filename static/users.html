@@ -42,7 +42,10 @@
 
 <div class="header">
   <h1>👥 玩家管理</h1>
-  <p><a href="/">← 返回設定頁</a> ｜ 查看與調整個別玩家的數值</p>
+  <p style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <select id="guild-select" onchange="switchGuild()" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.3);background:rgba(0,0,0,0.2);color:#fff;font-size:13px;min-width:180px"></select>
+    <a href="/">← 返回設定頁</a>
+  </p>
 </div>
 
 <div class="container">
@@ -78,6 +81,7 @@
 <script>
 let allUsers = [];
 let activityActive = false;
+let currentGuild = '';
 
 function toast(msg, isError) {
   const el = document.getElementById('toast');
@@ -87,14 +91,42 @@ function toast(msg, isError) {
 }
 
 async function api(method, path, body) {
+  let url = path;
+  if (path.startsWith('/api/') && path !== '/api/guilds' && currentGuild) {
+    const sep = url.includes('?') ? '&' : '?';
+    url += sep + 'guild=' + currentGuild;
+  }
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
+  const res = await fetch(url, opts);
   if (!res.ok) throw new Error('API error');
   return res.json();
 }
 
+async function loadGuilds() {
+  const guilds = await api('GET', '/api/guilds');
+  const sel = document.getElementById('guild-select');
+  if (!guilds.length) {
+    sel.innerHTML = '<option value="">-- 尚無伺服器 --</option>';
+    currentGuild = '';
+    return;
+  }
+  sel.innerHTML = guilds.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+  const saved = localStorage.getItem('selectedGuild');
+  if (saved && guilds.some(g => g.id === saved)) {
+    sel.value = saved;
+  }
+  currentGuild = sel.value;
+}
+
+function switchGuild() {
+  currentGuild = document.getElementById('guild-select').value;
+  localStorage.setItem('selectedGuild', currentGuild);
+  if (currentGuild) loadUsers();
+}
+
 async function loadUsers() {
+  if (!currentGuild) return;
   const [users, activity] = await Promise.all([
     api('GET', '/api/users'),
     api('GET', '/api/activity'),
@@ -141,7 +173,7 @@ async function saveUser(uid) {
   toast('玩家數值已更新');
 }
 
-loadUsers();
+loadGuilds().then(() => { if (currentGuild) loadUsers(); });
 </script>
 </body>
 </html>
