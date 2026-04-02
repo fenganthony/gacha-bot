@@ -20,7 +20,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="簽到", description="每日簽到領取代幣")
     async def checkin(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         success, msg = await asyncio.to_thread(db.checkin, str(interaction.user.id), self.config)
         color = 0x2ECC71 if success else 0xE74C3C
         embed = discord.Embed(title="📋 每日簽到", description=msg, color=color)
@@ -65,7 +65,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="扭蛋", description="花費代幣抽扭蛋")
     async def gacha(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         success, msg, prize = await asyncio.to_thread(db.do_gacha, str(interaction.user.id), self.config)
         if not success:
             embed = discord.Embed(title="🎰 扭蛋機", description=msg, color=0xE74C3C)
@@ -111,7 +111,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="獎品池", description="查看扭蛋獎品池與機率")
     async def pool(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         items = db.calc_item_probabilities(self.config)
         rarity_order = {"N": 0, "R": 1, "SR": 2, "SSR": 3, "秘藏": 4}
         items.sort(key=lambda x: (rarity_order.get(x["rarity"], 99), -x["probability"]))
@@ -134,7 +134,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="冒險", description="投入資源挑戰冒險事件")
     async def adventure(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         adventures = self.config.get("adventures", [])
         if not adventures:
             embed = discord.Embed(title="⚔️ 冒險", description="目前沒有可用的冒險事件", color=0x95A5A6)
@@ -166,7 +166,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="兌換", description="兌換背包中的獎品")
     async def redeem(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         items = await asyncio.to_thread(db.get_inventory, str(interaction.user.id))
         if not items:
             embed = discord.Embed(title="🎁 兌換", description="背包是空的，沒有可兌換的獎品！", color=0x95A5A6)
@@ -183,7 +183,7 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="背包", description="查看你的扭蛋收藏")
     async def inventory(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         items = await asyncio.to_thread(db.get_inventory, str(interaction.user.id))
         if not items:
             embed = discord.Embed(title="🎒 背包", description="背包是空的，快去扭蛋吧！", color=0x95A5A6)
@@ -255,7 +255,7 @@ class AdventureSelectView(discord.ui.View):
             modal = CustomBetModal(self.config, self.user_id, adventure)
             await interaction.response.send_modal(modal)
         else:
-            await interaction.response.defer(ephemeral=True)
+            await interaction.response.defer()
             await self._run_adventure(interaction, adventure)
 
     async def _run_adventure(self, interaction, adventure, custom_amount=None):
@@ -324,7 +324,7 @@ class CustomBetModal(discord.ui.Modal):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         # Create a temporary adventure view to run the adventure
         adv = {**self.adventure, "cost_type": "tokens", "cost_amount": amount}
         result = await asyncio.to_thread(db.do_adventure, self.user_id, adv, self.config)
@@ -332,7 +332,7 @@ class CustomBetModal(discord.ui.Modal):
 
         if not result["ok"]:
             embed = discord.Embed(title="⚔️ 冒險", description=result["msg"], color=0xE74C3C)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
             return
 
         if result["success"]:
@@ -353,7 +353,7 @@ class CustomBetModal(discord.ui.Modal):
         col = _col(self.config)
         embed.add_field(name="⚡ 精力", value=str(user["energy"]), inline=True)
         embed.add_field(name=f"🪙 {label}", value=str(user[col]), inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
 
 class RedeemSelectView(discord.ui.View):
