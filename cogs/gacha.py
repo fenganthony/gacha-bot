@@ -18,8 +18,17 @@ class Gacha(commands.Cog):
         self.bot = bot
         self.config = bot.config
 
+    def _wrong_channel(self, interaction: discord.Interaction) -> str | None:
+        """Return an error message if the command is used outside the game channel, or None if OK."""
+        ch_id = self.config.get("game_channel_id", "")
+        if ch_id and str(interaction.channel_id) != ch_id:
+            return f"請到 <#{ch_id}> 使用此指令"
+        return None
+
     @app_commands.command(name="簽到", description="每日簽到領取代幣")
     async def checkin(self, interaction: discord.Interaction):
+        if err := self._wrong_channel(interaction):
+            return await interaction.response.send_message(err, ephemeral=True)
         await interaction.response.defer()
         success, msg = await asyncio.to_thread(db.checkin, str(interaction.user.id), self.config)
         color = 0x2ECC71 if success else 0xE74C3C
@@ -65,6 +74,8 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="扭蛋", description="花費代幣抽扭蛋")
     async def gacha(self, interaction: discord.Interaction):
+        if err := self._wrong_channel(interaction):
+            return await interaction.response.send_message(err, ephemeral=True)
         await interaction.response.defer()
         success, msg, prize = await asyncio.to_thread(db.do_gacha, str(interaction.user.id), self.config)
         if not success:
@@ -134,6 +145,8 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="冒險", description="投入資源挑戰冒險事件")
     async def adventure(self, interaction: discord.Interaction):
+        if err := self._wrong_channel(interaction):
+            return await interaction.response.send_message(err, ephemeral=True)
         await interaction.response.defer()
         adventures = self.config.get("adventures", [])
         if not adventures:
@@ -166,6 +179,8 @@ class Gacha(commands.Cog):
 
     @app_commands.command(name="兌換", description="兌換背包中的獎品")
     async def redeem(self, interaction: discord.Interaction):
+        if err := self._wrong_channel(interaction):
+            return await interaction.response.send_message(err, ephemeral=True)
         await interaction.response.defer()
         items = await asyncio.to_thread(db.get_inventory, str(interaction.user.id))
         if not items:

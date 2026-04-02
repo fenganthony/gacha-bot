@@ -30,6 +30,7 @@ def create_app(config: dict) -> web.Application:
             "work": c["work"],
             "gacha_pool": items,
             "admin_role": c.get("admin_role", ""),
+            "game_channel_id": c.get("game_channel_id", ""),
             "redeem": c.get("redeem", {"channel_id": "", "role_id": "", "message_template": ""}),
             "adventures": c.get("adventures", []),
         })
@@ -136,10 +137,12 @@ def create_app(config: dict) -> web.Application:
         save_config(c)
         return web.json_response({"ok": True})
 
-    # --- API: Redeem settings ---
+    # --- API: Channel & notification settings ---
     async def update_redeem(request):
         data = await request.json()
         c = app["config"]
+        if "game_channel_id" in data:
+            c["game_channel_id"] = data["game_channel_id"]
         if "redeem" not in c:
             c["redeem"] = {}
         for key in ("channel_id", "role_id", "message_template"):

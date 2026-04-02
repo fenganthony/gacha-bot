@@ -41,6 +41,7 @@
     "checkin_reset_hours": 24,
     "checkin_reward": 200
   },
+  "game_channel_id": "",
   "admin_role": "",
   "rarity_weights": {
     "N": 50,
