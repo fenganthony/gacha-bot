@@ -141,9 +141,12 @@
   <!-- Channel & Notification Settings -->
   <div class="card" style="margin-bottom:20px">
     <h2>📢 頻道與通知</h2>
-    <div class="field">
-      <label>遊戲頻道 ID（簽到/扭蛋/冒險/兌換 限定頻道，留空 = 不限制）</label>
-      <input type="text" id="game_channel" placeholder="例：1234567890" />
+    <div style="display:grid;grid-template-columns:80px 1fr;gap:6px 12px;align-items:center;margin-bottom:12px">
+      <span style="font-size:12px;color:#888;grid-column:1/-1">指令頻道限制（填入頻道 ID，留空 = 不限制）</span>
+      <label style="font-size:13px">簽到</label><input type="text" id="ch_checkin" placeholder="頻道 ID" style="padding:6px 10px;border-radius:6px;border:1px solid #444;background:#1a1b2e;color:#e0e0e0;font-size:13px" />
+      <label style="font-size:13px">扭蛋</label><input type="text" id="ch_gacha" placeholder="頻道 ID" style="padding:6px 10px;border-radius:6px;border:1px solid #444;background:#1a1b2e;color:#e0e0e0;font-size:13px" />
+      <label style="font-size:13px">冒險</label><input type="text" id="ch_adventure" placeholder="頻道 ID" style="padding:6px 10px;border-radius:6px;border:1px solid #444;background:#1a1b2e;color:#e0e0e0;font-size:13px" />
+      <label style="font-size:13px">兌換</label><input type="text" id="ch_redeem_cmd" placeholder="頻道 ID" style="padding:6px 10px;border-radius:6px;border:1px solid #444;background:#1a1b2e;color:#e0e0e0;font-size:13px" />
     </div>
     <hr style="border-color:#333560;margin:16px 0" />
     <div class="field">
@@ -297,8 +300,12 @@ async function loadConfig() {
   document.getElementById('weight_sr').value = c.rarity_weights.SR;
   document.getElementById('weight_ssr').value = c.rarity_weights.SSR;
 
-  // Channels
-  document.getElementById('game_channel').value = c.game_channel_id || '';
+  // Channel limits
+  const cl = c.channel_limits || {};
+  document.getElementById('ch_checkin').value = cl.checkin || '';
+  document.getElementById('ch_gacha').value = cl.gacha || '';
+  document.getElementById('ch_adventure').value = cl.adventure || '';
+  document.getElementById('ch_redeem_cmd').value = cl.redeem_cmd || '';
   const rd = c.redeem || {};
   document.getElementById('redeem_channel').value = rd.channel_id || '';
   document.getElementById('redeem_role').value = rd.role_id || '';
@@ -363,7 +370,12 @@ async function saveTokens() {
 
 async function saveRedeem() {
   await api('POST', '/api/redeem', {
-    game_channel_id: document.getElementById('game_channel').value.trim(),
+    channel_limits: {
+      checkin: document.getElementById('ch_checkin').value.trim(),
+      gacha: document.getElementById('ch_gacha').value.trim(),
+      adventure: document.getElementById('ch_adventure').value.trim(),
+      redeem_cmd: document.getElementById('ch_redeem_cmd').value.trim(),
+    },
     channel_id: document.getElementById('redeem_channel').value.trim(),
     role_id: document.getElementById('redeem_role').value.trim(),
     message_template: document.getElementById('redeem_template').value,

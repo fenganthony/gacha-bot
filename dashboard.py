@@ -30,7 +30,7 @@ def create_app(config: dict) -> web.Application:
             "work": c["work"],
             "gacha_pool": items,
             "admin_role": c.get("admin_role", ""),
-            "game_channel_id": c.get("game_channel_id", ""),
+            "channel_limits": c.get("channel_limits", {"checkin": "", "gacha": "", "adventure": "", "redeem_cmd": ""}),
             "redeem": c.get("redeem", {"channel_id": "", "role_id": "", "message_template": ""}),
             "adventures": c.get("adventures", []),
         })
@@ -141,8 +141,12 @@ def create_app(config: dict) -> web.Application:
     async def update_redeem(request):
         data = await request.json()
         c = app["config"]
-        if "game_channel_id" in data:
-            c["game_channel_id"] = data["game_channel_id"]
+        if "channel_limits" in data:
+            if "channel_limits" not in c:
+                c["channel_limits"] = {}
+            for key in ("checkin", "gacha", "adventure", "redeem_cmd"):
+                if key in data["channel_limits"]:
+                    c["channel_limits"][key] = data["channel_limits"][key]
         if "redeem" not in c:
             c["redeem"] = {}
         for key in ("channel_id", "role_id", "message_template"):

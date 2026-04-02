@@ -41,7 +41,12 @@
     "checkin_reset_hours": 24,
     "checkin_reward": 200
   },
-  "game_channel_id": "",
+  "channel_limits": {
+    "checkin": "",
+    "gacha": "",
+    "adventure": "",
+    "redeem_cmd": ""
+  },
   "admin_role": "",
   "rarity_weights": {
     "N": 50,
