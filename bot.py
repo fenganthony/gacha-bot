@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import shutil
 import discord
 from discord.ext import commands
 from aiohttp import web
@@ -92,7 +93,10 @@ def _migrate_legacy_config(bot: GachaBot):
     # Reassign legacy db rows
     db.reassign_legacy_data(gid)
 
-    # Rewrite config.json to bot-token only
+    # Backup then rewrite config.json to bot-token only
+    backup = CONFIG_PATH.with_suffix(".pre-migration.json")
+    shutil.copy2(CONFIG_PATH, backup)
+    print(f"📋 舊設定備份至：{backup}")
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump({"bot_token": old_config["bot_token"]}, f, ensure_ascii=False, indent=2)
 

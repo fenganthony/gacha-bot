@@ -5,6 +5,8 @@ On upgrade: preserves existing config.json, only updates bot_token if provided.
 import json
 import os
 import sys
+import shutil
+import time
 
 app_dir = os.path.dirname(os.path.abspath(__file__))
 if app_dir not in sys.path:
@@ -30,6 +32,10 @@ def main():
     bot_token = os.environ.get("BOT_TOKEN", "")
 
     if CONFIG_PATH.exists():
+        # Backup before any changes
+        backup = CONFIG_PATH.with_suffix(f".backup-{time.strftime('%Y%m%d%H%M%S')}.json")
+        shutil.copy2(CONFIG_PATH, backup)
+        print(f"Backup saved to {backup}")
         # Upgrade: preserve existing config, only update bot_token if provided
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
