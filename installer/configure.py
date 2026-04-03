@@ -1,4 +1,7 @@
-"""Generate config.json with bot_token only. Guild configs are created at runtime."""
+"""Generate config.json with bot_token only. Guild configs are created at runtime.
+
+On upgrade: preserves existing config.json, only updates bot_token if provided.
+"""
 import json
 import os
 import sys
@@ -23,11 +26,24 @@ def load_env():
 
 def main():
     load_env()
-    config = {"bot_token": os.environ.get("BOT_TOKEN", "YOUR_DISCORD_BOT_TOKEN")}
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-    print(f"Config saved to {CONFIG_PATH}")
+    bot_token = os.environ.get("BOT_TOKEN", "")
+
+    if CONFIG_PATH.exists():
+        # Upgrade: preserve existing config, only update bot_token if provided
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        if bot_token:
+            config["bot_token"] = bot_token
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"Config updated (preserved existing settings)")
+    else:
+        # Fresh install: create minimal config
+        config = {"bot_token": bot_token or "YOUR_DISCORD_BOT_TOKEN"}
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"Config created at {CONFIG_PATH}")
 
 
 if __name__ == "__main__":

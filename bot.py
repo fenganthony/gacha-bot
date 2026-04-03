@@ -40,6 +40,9 @@ class GachaBot(commands.Bot):
                 self.guild_configs[gid] = cfg
             else:
                 gc.update_guild_name(gid, guild.name)
+        # Safety net: always reassign any orphaned 'legacy' data to first guild
+        if self.guilds:
+            db.reassign_legacy_data(str(self.guilds[0].id))
         for guild in self.guilds:
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
