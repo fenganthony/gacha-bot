@@ -2,7 +2,7 @@
 ; Requires: build.bat to be run first to populate installer\build\
 
 #define MyAppName "Gacha Bot"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "fenganthony"
 #define MyAppURL "https://github.com/fenganthony/gacha-bot"
 #define MyAppExeName "launcher.bat"
