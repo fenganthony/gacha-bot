@@ -103,10 +103,24 @@ class Admin(commands.Cog):
         self._save(interaction)
         await interaction.followup.send(f"✅ 已刪除打工地點：**{name}**")
 
-    @admin_group.command(name="新增獎品", description="新增扭蛋獎品（秘藏需設定權重）")
-    @app_commands.describe(name="獎品名稱", rarity="稀有度 (N/R/SR/SSR/秘藏)", weight="權重（僅秘藏需要填寫）")
+    @admin_group.command(name="新增獎品", description="新增扭蛋獎品（秘藏需設定權重；可選擇啟用數量上限）")
+    @app_commands.describe(
+        name="獎品名稱",
+        rarity="稀有度 (N/R/SR/SSR/秘藏)",
+        weight="權重（僅秘藏需要填寫）",
+        limit_enabled="是否限制此獎項可被抽中的次數",
+        stock_limit="若啟用上限，可被抽中的總次數",
+    )
     @app_commands.checks.has_permissions(administrator=True)
-    async def add_prize(self, interaction: discord.Interaction, name: str, rarity: str, weight: int = None):
+    async def add_prize(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        rarity: str,
+        weight: int = None,
+        limit_enabled: bool = False,
+        stock_limit: int = None,
+    ):
         await interaction.response.defer()
         config = self._cfg(interaction)
         valid = ("N", "R", "SR", "SSR", "秘藏")
@@ -117,15 +131,58 @@ class Admin(commands.Cog):
         if r == "秘藏" and weight is None:
             await interaction.followup.send("❌ 秘藏獎品必須設定權重")
             return
+        if limit_enabled and (stock_limit is None or stock_limit < 1):
+            await interaction.followup.send("❌ 啟用數量上限時，stock_limit 必須是 ≥ 1 的整數")
+            return
         item = {"name": name, "rarity": r}
         if r == "秘藏":
             item["weight"] = weight
+        if limit_enabled:
+            item["limit_enabled"] = True
+            item["stock_limit"] = int(stock_limit)
+            item["stock_remaining"] = int(stock_limit)
         config["gacha_pool"].append(item)
         self._save(interaction)
         msg = f"✅ 已新增獎品：`{r}` **{name}**"
         if r == "秘藏":
             msg += f"（權重 {weight}）"
+        if limit_enabled:
+            msg += f"｜剩餘 {stock_limit}/{stock_limit}"
         await interaction.followup.send(msg)
+
+    @admin_group.command(name="補滿", description="將指定獎項的剩餘數量補滿到上限")
+    @app_commands.describe(name="獎品名稱")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def refill_prize(self, interaction: discord.Interaction, name: str):
+        await interaction.response.defer()
+        config = self._cfg(interaction)
+        ok, amount = db.refill_prize(config, name)
+        if not ok:
+            await interaction.followup.send(f"❌ 找不到獎品「{name}」，或該獎項未啟用數量上限")
+            return
+        self._save(interaction)
+        await interaction.followup.send(f"✅ 已將 **{name}** 補滿至 {amount}/{amount}")
+
+    @admin_group.command(name="設定剩餘", description="精準設定獎項的剩餘數量（不變更上限）")
+    @app_commands.describe(name="獎品名稱", remaining="新的剩餘數量（≥ 0，不可超過上限）")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_prize_remaining(self, interaction: discord.Interaction, name: str, remaining: int):
+        await interaction.response.defer()
+        config = self._cfg(interaction)
+        for p in config.get("gacha_pool", []):
+            if p.get("name") == name:
+                if not p.get("limit_enabled"):
+                    await interaction.followup.send(f"❌ 獎品「{name}」未啟用數量上限")
+                    return
+                limit = int(p.get("stock_limit") or 0)
+                if remaining < 0 or remaining > limit:
+                    await interaction.followup.send(f"❌ 剩餘數量必須在 0 ~ {limit} 之間")
+                    return
+                p["stock_remaining"] = int(remaining)
+                self._save(interaction)
+                await interaction.followup.send(f"✅ **{name}** 剩餘數量已設為 {remaining}/{limit}")
+                return
+        await interaction.followup.send(f"❌ 找不到獎品「{name}」")
 
     @admin_group.command(name="稀有度權重", description="設定 N/R/SR/SSR 的統一權重")
     @app_commands.describe(rarity="稀有度 (N/R/SR/SSR)", weight="權重數值")
@@ -290,11 +347,17 @@ class Admin(commands.Cog):
             for w in c["work"]
         ) or "  （無）"
         items_with_prob = db.calc_item_probabilities(c)
-        prize_lines = "\n".join(
-            f"  • `{p['rarity']}` **{p['name']}** — {p['probability']*100:.2f}%"
-            + (f"（權重 {p.get('weight', '')}）" if p["rarity"] == "秘藏" else "")
-            for p in items_with_prob
-        ) or "  （無）"
+        def _prize_line(p):
+            line = f"  • `{p['rarity']}` **{p['name']}** — {p['probability']*100:.2f}%"
+            if p["rarity"] == "秘藏":
+                line += f"（權重 {p.get('weight', '')}）"
+            if p.get("limit_enabled"):
+                rem = int(p.get("stock_remaining") or 0)
+                lim = int(p.get("stock_limit") or 0)
+                tag = "已抽完" if rem <= 0 else f"剩餘 {rem}/{lim}"
+                line += f"｜{tag}"
+            return line
+        prize_lines = "\n".join(_prize_line(p) for p in items_with_prob) or "  （無）"
         embed = discord.Embed(title="⚙️ 目前設定", color=0x9B59B6)
         embed.add_field(
             name="精力",

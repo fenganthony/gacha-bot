@@ -39,14 +39,16 @@ powershell -Command "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.p
 del "%BUILD%\get-pip.py"
 
 echo [4/5] Installing dependencies...
-"%BUILD%\python\python.exe" -m pip install --no-warn-script-location discord.py>=2.3.0 aiohttp>=3.9.0
+"%BUILD%\python\python.exe" -m pip install --no-warn-script-location -r "%ROOT%\requirements.txt"
 
 echo [5/5] Copying application files...
-xcopy /E /I /Y "%ROOT%\bot.py" "%BUILD%\app\"
-xcopy /E /I /Y "%ROOT%\dashboard.py" "%BUILD%\app\"
-xcopy /E /I /Y "%ROOT%\database.py" "%BUILD%\app\"
-xcopy /E /I /Y "%ROOT%\requirements.txt" "%BUILD%\app\"
-xcopy /E /I /Y "%ROOT%\config.example.json" "%BUILD%\app\"
+copy /Y "%ROOT%\bot.py" "%BUILD%\app\"
+copy /Y "%ROOT%\dashboard.py" "%BUILD%\app\"
+copy /Y "%ROOT%\database.py" "%BUILD%\app\"
+copy /Y "%ROOT%\paths.py" "%BUILD%\app\"
+copy /Y "%ROOT%\guild_config.py" "%BUILD%\app\"
+copy /Y "%ROOT%\requirements.txt" "%BUILD%\app\"
+copy /Y "%ROOT%\config.example.json" "%BUILD%\app\"
 xcopy /E /I /Y "%ROOT%\cogs" "%BUILD%\app\cogs\"
 xcopy /E /I /Y "%ROOT%\static" "%BUILD%\app\static\"
 
@@ -54,6 +56,7 @@ xcopy /E /I /Y "%ROOT%\static" "%BUILD%\app\static\"
 copy /Y "%~dp0launcher.bat" "%BUILD%\app\"
 copy /Y "%~dp0stop.bat" "%BUILD%\app\"
 copy /Y "%~dp0configure.py" "%BUILD%\app\"
+copy /Y "%~dp0run.py" "%BUILD%\app\"
 
 echo.
 echo Build complete! Files in: %BUILD%

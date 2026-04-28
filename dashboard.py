@@ -128,6 +128,13 @@ def create_app(bot) -> web.Application:
         item = {"name": data["name"], "rarity": data["rarity"]}
         if data["rarity"] == "秘藏":
             item["weight"] = int(data.get("weight", 1))
+        if data.get("limit_enabled"):
+            limit = int(data.get("stock_limit") or 0)
+            if limit < 1:
+                return web.json_response({"ok": False, "msg": "啟用上限時，數量上限必須 ≥ 1"}, status=400)
+            item["limit_enabled"] = True
+            item["stock_limit"] = limit
+            item["stock_remaining"] = limit
         c["gacha_pool"].append(item)
         _save(gid)
         return web.json_response({"ok": True})
@@ -138,6 +145,52 @@ def create_app(bot) -> web.Application:
         c["gacha_pool"] = [p for p in c["gacha_pool"] if p["name"] != data["name"]]
         _save(gid)
         return web.json_response({"ok": True})
+
+    async def update_prize_stock(request):
+        """Edit an existing prize's stock fields (enable/disable limit, set limit/remaining)."""
+        gid, c = _get_guild(request)
+        data = await request.json()
+        name = data.get("name")
+        if not name:
+            return web.json_response({"ok": False, "msg": "缺少獎品名稱"}, status=400)
+        for p in c.get("gacha_pool", []):
+            if p.get("name") == name:
+                if "limit_enabled" in data:
+                    enabled = bool(data["limit_enabled"])
+                    if enabled:
+                        limit = int(data.get("stock_limit") or 0)
+                        if limit < 1:
+                            return web.json_response({"ok": False, "msg": "上限必須 ≥ 1"}, status=400)
+                        remaining = data.get("stock_remaining")
+                        remaining = int(remaining) if remaining is not None else limit
+                        if remaining < 0 or remaining > limit:
+                            return web.json_response({"ok": False, "msg": f"剩餘必須在 0~{limit} 之間"}, status=400)
+                        p["limit_enabled"] = True
+                        p["stock_limit"] = limit
+                        p["stock_remaining"] = remaining
+                    else:
+                        p["limit_enabled"] = False
+                        p.pop("stock_limit", None)
+                        p.pop("stock_remaining", None)
+                else:
+                    if not p.get("limit_enabled"):
+                        return web.json_response({"ok": False, "msg": "此獎項未啟用上限"}, status=400)
+                    if "stock_limit" in data:
+                        limit = int(data["stock_limit"])
+                        if limit < 1:
+                            return web.json_response({"ok": False, "msg": "上限必須 ≥ 1"}, status=400)
+                        p["stock_limit"] = limit
+                        if int(p.get("stock_remaining") or 0) > limit:
+                            p["stock_remaining"] = limit
+                    if "stock_remaining" in data:
+                        remaining = int(data["stock_remaining"])
+                        limit = int(p.get("stock_limit") or 0)
+                        if remaining < 0 or remaining > limit:
+                            return web.json_response({"ok": False, "msg": f"剩餘必須在 0~{limit} 之間"}, status=400)
+                        p["stock_remaining"] = remaining
+                _save(gid)
+                return web.json_response({"ok": True})
+        return web.json_response({"ok": False, "msg": "找不到獎品"}, status=404)
 
     # --- API: Adventure CRUD ---
     async def add_adventure(request):
@@ -301,6 +354,7 @@ def create_app(bot) -> web.Application:
     app.router.add_delete("/api/work", delete_work)
     app.router.add_post("/api/prize", add_prize)
     app.router.add_delete("/api/prize", delete_prize)
+    app.router.add_post("/api/prize/stock", update_prize_stock)
     app.router.add_post("/api/adventure", add_adventure)
     app.router.add_delete("/api/adventure", delete_adventure)
     app.router.add_post("/api/redeem", update_redeem)

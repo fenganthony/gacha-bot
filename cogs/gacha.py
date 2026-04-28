@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 import time
 import database as db
+import guild_config as gc
 
 
 def _label(config):
@@ -96,13 +97,18 @@ class Gacha(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
 
+        # Persist stock decrement to disk if this prize had a limit.
+        if prize.get("limit_enabled"):
+            await asyncio.to_thread(gc.save_guild_config, gid, config)
+
         rarity_colors = {"N": 0x95A5A6, "R": 0x3498DB, "SR": 0x9B59B6, "SSR": 0xF1C40F, "秘藏": 0xE74C3C}
         color = rarity_colors.get(prize["rarity"], 0xFFFFFF)
-        embed = discord.Embed(
-            title="🎰 扭蛋機",
-            description=f"{msg}\n\n🎉 恭喜獲得：\n# {prize['name']}\n`{prize['rarity']}`",
-            color=color,
-        )
+        desc = f"{msg}\n\n🎉 恭喜獲得：\n# {prize['name']}\n`{prize['rarity']}`"
+        if prize.get("limit_enabled"):
+            rem = int(prize.get("stock_remaining") or 0)
+            lim = int(prize.get("stock_limit") or 0)
+            desc += f"\n📦 該獎項剩餘 {rem}/{lim}"
+        embed = discord.Embed(title="🎰 扭蛋機", description=desc, color=color)
         user = await asyncio.to_thread(db.get_user, gid, str(interaction.user.id), config)
         embed.add_field(name=f"剩餘{_label(config)}", value=f"🪙 {user[_col(config)]}")
         await interaction.followup.send(embed=embed)
@@ -146,7 +152,13 @@ class Gacha(commands.Cog):
         for item in items:
             pct = item["probability"] * 100
             pct_str = f"{pct:.1f}%" if pct >= 1 else f"{pct:.2f}%"
-            lines.append(f"`{item['rarity']}` **{item['name']}** — {pct_str}")
+            line = f"`{item['rarity']}` **{item['name']}** — {pct_str}"
+            if item.get("limit_enabled"):
+                rem = int(item.get("stock_remaining") or 0)
+                lim = int(item.get("stock_limit") or 0)
+                tag = "已抽完" if rem <= 0 else f"剩餘 {rem}/{lim}"
+                line += f"｜📦 {tag}"
+            lines.append(line)
         embed = discord.Embed(title="🎰 獎品池", description="\n".join(lines), color=0xF39C12)
         label = _label(config)
         embed.set_footer(text=f"每次扭蛋消耗 {config['tokens']['gacha_cost']} {label}")

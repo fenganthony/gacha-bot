@@ -226,18 +226,63 @@ def collect_work(guild_id: str, user_id: str, config: dict) -> tuple[bool, str]:
 
 # --- Gacha ---
 
-def calc_item_probabilities(config: dict) -> list[dict]:
+def _normalize_prize(item: dict) -> dict:
+    """Soft-upgrade an old prize record by filling in stock fields with safe defaults."""
+    return {
+        "limit_enabled": False,
+        "stock_limit": None,
+        "stock_remaining": None,
+        **item,
+    }
+
+
+def _is_depleted(item: dict) -> bool:
+    return bool(item.get("limit_enabled")) and (item.get("stock_remaining") or 0) <= 0
+
+
+def is_pool_empty(config: dict) -> bool:
+    """Pool is empty only if every prize has a limit and zero stock."""
+    pool = config.get("gacha_pool", [])
+    if not pool:
+        return True
+    return all(_is_depleted(_normalize_prize(p)) for p in pool)
+
+
+def refill_prize(config: dict, name: str) -> tuple[bool, int]:
+    """Reset stock_remaining = stock_limit for a named prize. Returns (found, restored_amount)."""
+    for p in config.get("gacha_pool", []):
+        if p.get("name") == name:
+            if not p.get("limit_enabled"):
+                return False, 0
+            limit = int(p.get("stock_limit") or 0)
+            p["stock_remaining"] = limit
+            return True, limit
+    return False, 0
+
+
+def calc_item_probabilities(config: dict, exclude_depleted: bool = False) -> list[dict]:
     rarity_weights = config["rarity_weights"]
-    pool = config["gacha_pool"]
+    pool = [_normalize_prize(p) for p in config["gacha_pool"]]
+    if exclude_depleted:
+        pool = [p for p in pool if not _is_depleted(p)]
+
     secret_items = [p for p in pool if p["rarity"] == "秘藏"]
     standard_items = [p for p in pool if p["rarity"] != "秘藏"]
-    total_weight = sum(rarity_weights.values()) + sum(p.get("weight", 1) for p in secret_items)
+
     rarity_counts: dict[str, int] = {}
     for item in standard_items:
         rarity_counts[item["rarity"]] = rarity_counts.get(item["rarity"], 0) + 1
+
+    active_rarity_weight = sum(
+        w for r, w in rarity_weights.items() if rarity_counts.get(r, 0) > 0
+    )
+    total_weight = active_rarity_weight + sum(p.get("weight", 1) for p in secret_items)
+
     results = []
     for item in pool:
-        if item["rarity"] == "秘藏":
+        if total_weight <= 0:
+            prob = 0.0
+        elif item["rarity"] == "秘藏":
             prob = item.get("weight", 1) / total_weight
         else:
             count = rarity_counts.get(item["rarity"], 1)
@@ -255,9 +300,34 @@ def do_gacha(guild_id: str, user_id: str, config: dict) -> tuple[bool, str, dict
     current = user[col]
     if current < cost:
         return False, f"{label}不足！需要 {cost}，目前只有 {current}", None
+
+    if is_pool_empty(config):
+        return False, "獎池所有獎項皆已抽完，無法抽取空的轉蛋機", None
+
+    # Reroll while landing on a depleted prize.
     items_with_prob = calc_item_probabilities(config)
     weights = [item["probability"] for item in items_with_prob]
-    prize = random.choices(items_with_prob, weights=weights, k=1)[0]
+    if sum(weights) <= 0:
+        return False, "獎池所有獎項皆已抽完，無法抽取空的轉蛋機", None
+
+    prize = None
+    for _ in range(100):
+        candidate = random.choices(items_with_prob, weights=weights, k=1)[0]
+        if _is_depleted(candidate):
+            continue
+        prize = candidate
+        break
+    if prize is None:
+        return False, "獎池所有獎項皆已抽完，無法抽取空的轉蛋機", None
+
+    # Decrement stock on the live config object (caller is responsible for persisting).
+    if prize.get("limit_enabled"):
+        for p in config["gacha_pool"]:
+            if p.get("name") == prize["name"] and p.get("rarity") == prize["rarity"]:
+                p["stock_remaining"] = max(0, int(p.get("stock_remaining") or 0) - 1)
+                prize = {**prize, "stock_remaining": p["stock_remaining"]}
+                break
+
     now = time.time()
     with get_conn() as conn:
         conn.execute(
