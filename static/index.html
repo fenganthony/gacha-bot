@@ -165,6 +165,11 @@
       <label>公告訊息模板（可用 {user} {item} {rarity} {role}）</label>
       <input type="text" id="redeem_template" />
     </div>
+    <div class="field">
+      <label>防擠兌公共冷卻（秒，0 = 不限制）</label>
+      <input type="number" id="redeem_cooldown" min="0" placeholder="例：60" />
+      <span style="font-size:11px;color:#666">任一玩家兌換成功後，全伺服器需等待此秒數才能再次兌換</span>
+    </div>
     <div class="btn-row">
       <button class="btn btn-primary" onclick="saveRedeem()">儲存</button>
     </div>
@@ -229,10 +234,28 @@
     </div>
   </div>
 
-  <!-- Edit Stock Modal -->
+  <!-- Edit Prize Modal -->
   <div id="stock-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center">
-    <div class="card" style="max-width:420px;width:90%">
-      <h2 id="stock-modal-title">📦 編輯數量上限</h2>
+    <div class="card" style="max-width:440px;width:90%">
+      <h2 id="stock-modal-title">✏️ 編輯獎品</h2>
+      <div class="inline-fields">
+        <div class="field"><label>名稱</label><input type="text" id="edit-prize-name" /></div>
+        <div class="field">
+          <label>品質（稀有度）</label>
+          <select id="edit-prize-rarity" onchange="toggleEditWeight()">
+            <option value="N">N</option>
+            <option value="R">R</option>
+            <option value="SR">SR</option>
+            <option value="SSR">SSR</option>
+            <option value="秘藏">秘藏</option>
+          </select>
+        </div>
+        <div class="field" id="edit-weight-field" style="display:none">
+          <label>權重</label><input type="number" id="edit-prize-weight" min="1" value="1" />
+        </div>
+      </div>
+      <p style="font-size:11px;color:#f39c12;margin:4px 0 12px">⚠️ 變更名稱／品質會同步更新所有玩家背包中的相同道具</p>
+      <hr style="border-color:#333560;margin:4px 0 12px" />
       <div class="field" style="display:flex;align-items:center;gap:8px">
         <input type="checkbox" id="stock-modal-enabled" onchange="toggleStockModalFields()" style="width:auto;margin:0" />
         <label for="stock-modal-enabled" style="margin:0;cursor:pointer">啟用數量上限</label>
@@ -390,6 +413,7 @@ async function loadConfig() {
   document.getElementById('redeem_channel').value = rd.channel_id || '';
   document.getElementById('redeem_role').value = rd.role_id || '';
   document.getElementById('redeem_template').value = rd.message_template || '';
+  document.getElementById('redeem_cooldown').value = rd.cooldown_seconds || 0;
 
   const wt = document.getElementById('work-table');
   wt.innerHTML = c.work.map(w => `<tr>
@@ -415,8 +439,8 @@ async function loadConfig() {
       <td>${p.name}${extra}</td><td>${pctStr}</td>
       <td>${stockCell}</td>
       <td>
-        <button class="btn btn-warning btn-sm" onclick="openStockModal(${i})">📦</button>
-        <button class="btn btn-danger btn-sm" onclick="deletePrize('${p.name.replace(/'/g, "\\'")}')">刪除</button>
+        <button class="btn btn-warning btn-sm" onclick="openStockModal(${i})">✏️ 編輯</button>
+        <button class="btn btn-danger btn-sm" onclick="deletePrize(${i})">刪除</button>
       </td>
     </tr>`;
   }).join('');
@@ -471,6 +495,7 @@ async function saveRedeem() {
     channel_id: document.getElementById('redeem_channel').value.trim(),
     role_id: document.getElementById('redeem_role').value.trim(),
     message_template: document.getElementById('redeem_template').value,
+    cooldown_seconds: document.getElementById('redeem_cooldown').value || 0,
   });
   toast('頻道與通知設定已儲存');
 }
@@ -543,21 +568,29 @@ async function addPrize() {
   loadConfig();
 }
 
-async function deletePrize(name) {
-  if (!confirm(`確定刪除「${name}」？`)) return;
-  await api('DELETE', '/api/prize', { name });
+async function deletePrize(idx) {
+  const p = (window._prizeData || [])[idx];
+  if (!p) return;
+  if (!confirm(`確定刪除「${p.name}」？`)) return;
+  await api('DELETE', '/api/prize', { index: idx, name: p.name });
   toast('獎品已刪除');
   loadConfig();
 }
 
 // --- Stock modal ---
 let _editingPrize = null;
+let _editingIndex = -1;
 
 function openStockModal(idx) {
   const p = (window._prizeData || [])[idx];
   if (!p) return;
   _editingPrize = p;
-  document.getElementById('stock-modal-title').textContent = `📦 ${p.name} — 數量上限`;
+  _editingIndex = idx;
+  document.getElementById('stock-modal-title').textContent = `✏️ 編輯獎品 — ${p.name}`;
+  document.getElementById('edit-prize-name').value = p.name;
+  document.getElementById('edit-prize-rarity').value = p.rarity;
+  document.getElementById('edit-prize-weight').value = p.weight ?? 1;
+  toggleEditWeight();
   document.getElementById('stock-modal-enabled').checked = !!p.limit_enabled;
   document.getElementById('stock-modal-limit').value = p.stock_limit ?? 1;
   document.getElementById('stock-modal-remaining').value = p.stock_remaining ?? 0;
@@ -568,6 +601,11 @@ function openStockModal(idx) {
 function closeStockModal() {
   document.getElementById('stock-modal').style.display = 'none';
   _editingPrize = null;
+}
+
+function toggleEditWeight() {
+  document.getElementById('edit-weight-field').style.display =
+    document.getElementById('edit-prize-rarity').value === '秘藏' ? '' : 'none';
 }
 
 function toggleStockModalFields() {
@@ -582,23 +620,33 @@ function refillStock() {
 
 async function saveStock() {
   if (!_editingPrize) return;
+  const newName = document.getElementById('edit-prize-name').value.trim();
+  if (!newName) { toast('名稱不可為空', true); return; }
+  const rarity = document.getElementById('edit-prize-rarity').value;
   const enabled = document.getElementById('stock-modal-enabled').checked;
-  const body = { name: _editingPrize.name, limit_enabled: enabled };
+  const body = {
+    index: _editingIndex,
+    old_name: _editingPrize.name,
+    name: newName,
+    rarity,
+    limit_enabled: enabled,
+  };
+  if (rarity === '秘藏') body.weight = parseInt(document.getElementById('edit-prize-weight').value || '1');
   if (enabled) {
     body.stock_limit = parseInt(document.getElementById('stock-modal-limit').value || '0');
     body.stock_remaining = parseInt(document.getElementById('stock-modal-remaining').value || '0');
   }
   try {
-    const res = await fetch('/api/prize/stock?guild=' + currentGuild, {
+    const res = await fetch('/api/prize/edit?guild=' + currentGuild, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) { toast(data.msg || '儲存失敗', true); return; }
+    closeStockModal();
+    toast(data.renamed ? `已儲存，同步更新 ${data.renamed} 件背包道具` : '已儲存');
   } catch (e) { toast('儲存失敗', true); return; }
-  closeStockModal();
-  toast('已儲存');
   loadConfig();
 }
 

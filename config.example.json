@@ -71,5 +71,11 @@
       "name": "⭐⭐⭐⭐ 傳說獎品",
       "rarity": "SSR"
     }
-  ]
+  ],
+  "redeem": {
+    "channel_id": "",
+    "role_id": "",
+    "message_template": "🎁 {user} 兌換了 `{rarity}` **{item}**！",
+    "cooldown_seconds": 0
+  }
 }

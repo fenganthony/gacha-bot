@@ -447,10 +447,23 @@ class RedeemConfirmView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True)
 
-        success = await asyncio.to_thread(
-            db.redeem_item, self.guild_id, str(self.user.id), self.item["item_name"], self.item["rarity"]
+        cooldown = int(self.config.get("redeem", {}).get("cooldown_seconds", 0) or 0)
+        status, remaining = await asyncio.to_thread(
+            db.try_redeem, self.guild_id, str(self.user.id),
+            self.item["item_name"], self.item["rarity"], cooldown,
         )
-        if not success:
+        if status == "cooldown":
+            secs = int(remaining)
+            mins, secs = divmod(secs, 60)
+            wait = f"{mins} 分 {secs} 秒" if mins else f"{secs} 秒"
+            embed = discord.Embed(
+                title="🎁 兌換冷卻中",
+                description=f"目前兌換功能正在公共冷卻中，請於 **{wait}** 後再試。",
+                color=0xF39C12,
+            )
+            await interaction.edit_original_response(embed=embed, view=None)
+            return
+        if status != "ok":
             embed = discord.Embed(title="🎁 兌換失敗", description="背包中找不到該獎品", color=0xE74C3C)
             await interaction.edit_original_response(embed=embed, view=None)
             return

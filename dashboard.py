@@ -63,7 +63,7 @@ def create_app(bot) -> web.Application:
             "gacha_pool": items,
             "admin_role": c.get("admin_role", ""),
             "channel_limits": c.get("channel_limits", {"checkin": "", "gacha": "", "adventure": "", "redeem_cmd": ""}),
-            "redeem": c.get("redeem", {"channel_id": "", "role_id": "", "message_template": ""}),
+            "redeem": {"channel_id": "", "role_id": "", "message_template": "", "cooldown_seconds": 0, **c.get("redeem", {})},
             "adventures": c.get("adventures", []),
         })
 
@@ -142,7 +142,18 @@ def create_app(bot) -> web.Application:
     async def delete_prize(request):
         gid, c = _get_guild(request)
         data = await request.json()
-        c["gacha_pool"] = [p for p in c["gacha_pool"] if p["name"] != data["name"]]
+        pool = c.get("gacha_pool", [])
+        idx = data.get("index")
+        name = data.get("name")
+        # Prefer exact position so duplicate-named prizes aren't all removed at once.
+        if isinstance(idx, int) and 0 <= idx < len(pool) and (name is None or pool[idx].get("name") == name):
+            pool.pop(idx)
+        else:
+            removed = next((i for i, p in enumerate(pool) if p.get("name") == name), None)
+            if removed is None:
+                return web.json_response({"ok": False, "msg": "找不到獎品"}, status=404)
+            pool.pop(removed)
+        c["gacha_pool"] = pool
         _save(gid)
         return web.json_response({"ok": True})
 
@@ -192,6 +203,75 @@ def create_app(bot) -> web.Application:
                 return web.json_response({"ok": True})
         return web.json_response({"ok": False, "msg": "找不到獎品"}, status=404)
 
+    async def edit_prize(request):
+        """Edit an existing prize's name / rarity / weight / stock in one go.
+
+        Renaming or re-rarity-ing also cascades to every matching item already
+        sitting in players' backpacks so nothing is orphaned.
+        """
+        gid, c = _get_guild(request)
+        data = await request.json()
+        old_name = data.get("old_name")
+        if not old_name:
+            return web.json_response({"ok": False, "msg": "缺少原始獎品名稱"}, status=400)
+        pool = c.get("gacha_pool", [])
+        # Identify the prize by its exact position so same-named entries don't clash.
+        idx = data.get("index")
+        target = None
+        if isinstance(idx, int) and 0 <= idx < len(pool) and pool[idx].get("name") == old_name:
+            target = pool[idx]
+        else:
+            target = next((p for p in pool if p.get("name") == old_name), None)
+        if target is None:
+            return web.json_response({"ok": False, "msg": "找不到獎品"}, status=404)
+
+        valid = ("N", "R", "SR", "SSR", "秘藏")
+        old_rarity = target.get("rarity")
+        new_name = (data.get("name") or old_name).strip()
+        new_rarity = data.get("rarity") or old_rarity
+        if not new_name:
+            return web.json_response({"ok": False, "msg": "名稱不可為空"}, status=400)
+        if new_rarity not in valid:
+            return web.json_response({"ok": False, "msg": "稀有度必須是 N/R/SR/SSR/秘藏"}, status=400)
+        if new_name != old_name and any(p is not target and p.get("name") == new_name for p in pool):
+            return web.json_response({"ok": False, "msg": f"已存在名為「{new_name}」的獎品"}, status=400)
+
+        target["name"] = new_name
+        target["rarity"] = new_rarity
+        if new_rarity == "秘藏":
+            weight = data.get("weight", target.get("weight", 1))
+            try:
+                target["weight"] = max(1, int(weight))
+            except (ValueError, TypeError):
+                target["weight"] = target.get("weight", 1)
+        else:
+            target.pop("weight", None)
+
+        # Stock fields (optional)
+        if "limit_enabled" in data:
+            enabled = bool(data["limit_enabled"])
+            if enabled:
+                limit = int(data.get("stock_limit") or 0)
+                if limit < 1:
+                    return web.json_response({"ok": False, "msg": "上限必須 ≥ 1"}, status=400)
+                remaining = data.get("stock_remaining")
+                remaining = int(remaining) if remaining is not None else limit
+                if remaining < 0 or remaining > limit:
+                    return web.json_response({"ok": False, "msg": f"剩餘必須在 0~{limit} 之間"}, status=400)
+                target["limit_enabled"] = True
+                target["stock_limit"] = limit
+                target["stock_remaining"] = remaining
+            else:
+                target["limit_enabled"] = False
+                target.pop("stock_limit", None)
+                target.pop("stock_remaining", None)
+
+        _save(gid)
+        renamed = 0
+        if old_name != new_name or old_rarity != new_rarity:
+            renamed = db.rename_inventory_item(gid, old_name, old_rarity, new_name, new_rarity)
+        return web.json_response({"ok": True, "renamed": renamed})
+
     # --- API: Adventure CRUD ---
     async def add_adventure(request):
         gid, c = _get_guild(request)
@@ -237,6 +317,11 @@ def create_app(bot) -> web.Application:
         for key in ("channel_id", "role_id", "message_template"):
             if key in data:
                 c["redeem"][key] = data[key]
+        if "cooldown_seconds" in data:
+            try:
+                c["redeem"]["cooldown_seconds"] = max(0, int(data["cooldown_seconds"] or 0))
+            except (ValueError, TypeError):
+                c["redeem"]["cooldown_seconds"] = 0
         _save(gid)
         return web.json_response({"ok": True})
 
@@ -338,6 +423,73 @@ def create_app(bot) -> web.Application:
         db.update_user(gid, user_id, data)
         return web.json_response({"ok": True})
 
+    # --- API: Per-user backpack (view / edit / delete) ---
+    async def get_user_inventory(request):
+        gid, c = _get_guild(request)
+        user_id = request.query.get("user", "")
+        if not user_id:
+            return web.json_response({"ok": False, "msg": "缺少 user"}, status=400)
+        return web.json_response(db.get_user_inventory_admin(gid, user_id))
+
+    async def edit_user_inventory(request):
+        gid, c = _get_guild(request)
+        data = await request.json()
+        user_id = data.get("user_id")
+        old_name = data.get("old_name")
+        old_rarity = data.get("old_rarity")
+        if not (user_id and old_name and old_rarity):
+            return web.json_response({"ok": False, "msg": "缺少必要參數"}, status=400)
+        valid = ("N", "R", "SR", "SSR", "秘藏")
+        new_name = (data.get("name") or old_name).strip()
+        new_rarity = data.get("rarity") or old_rarity
+        if not new_name:
+            return web.json_response({"ok": False, "msg": "名稱不可為空"}, status=400)
+        if new_rarity not in valid:
+            return web.json_response({"ok": False, "msg": "稀有度必須是 N/R/SR/SSR/秘藏"}, status=400)
+        new_count = data.get("count")
+        if new_count is not None:
+            try:
+                new_count = int(new_count)
+            except (ValueError, TypeError):
+                return web.json_response({"ok": False, "msg": "數量必須是整數"}, status=400)
+            if new_count < 0:
+                return web.json_response({"ok": False, "msg": "數量不可為負"}, status=400)
+        ok = db.admin_edit_user_item(gid, user_id, old_name, old_rarity, new_name, new_rarity, new_count)
+        if not ok:
+            return web.json_response({"ok": False, "msg": "該玩家沒有此道具"}, status=404)
+        return web.json_response({"ok": True})
+
+    async def delete_user_inventory(request):
+        gid, c = _get_guild(request)
+        data = await request.json()
+        user_id = data.get("user_id")
+        item_name = data.get("item_name")
+        rarity = data.get("rarity")
+        if not (user_id and item_name and rarity):
+            return web.json_response({"ok": False, "msg": "缺少必要參數"}, status=400)
+        removed = db.admin_delete_user_item(gid, user_id, item_name, rarity)
+        return web.json_response({"ok": True, "removed": removed})
+
+    # --- API: Reset all currency (per guild) ---
+    async def reset_currency(request):
+        gid, c = _get_guild(request)
+        result = db.reset_currency(gid)
+        return web.json_response({"ok": True, **result})
+
+    # --- API: Server-wide item purge (selective) ---
+    async def list_guild_items(request):
+        gid, c = _get_guild(request)
+        return web.json_response(db.get_guild_item_summary(gid))
+
+    async def purge_guild_items(request):
+        gid, c = _get_guild(request)
+        data = await request.json()
+        items = data.get("items", [])
+        if not isinstance(items, list) or not items:
+            return web.json_response({"ok": False, "msg": "未選擇任何道具"}, status=400)
+        removed = db.delete_items_everywhere(gid, items)
+        return web.json_response({"ok": True, "removed": removed, "types": len(items)})
+
     # --- API: Health check ---
     async def health(request):
         return web.json_response({"status": "ok"})
@@ -355,6 +507,7 @@ def create_app(bot) -> web.Application:
     app.router.add_post("/api/prize", add_prize)
     app.router.add_delete("/api/prize", delete_prize)
     app.router.add_post("/api/prize/stock", update_prize_stock)
+    app.router.add_post("/api/prize/edit", edit_prize)
     app.router.add_post("/api/adventure", add_adventure)
     app.router.add_delete("/api/adventure", delete_adventure)
     app.router.add_post("/api/redeem", update_redeem)
@@ -366,6 +519,12 @@ def create_app(bot) -> web.Application:
     app.router.add_post("/api/activity", toggle_activity)
     app.router.add_get("/api/users", get_users)
     app.router.add_post("/api/users", update_user_api)
+    app.router.add_get("/api/users/inventory", get_user_inventory)
+    app.router.add_post("/api/users/inventory", edit_user_inventory)
+    app.router.add_delete("/api/users/inventory", delete_user_inventory)
+    app.router.add_post("/api/reset", reset_currency)
+    app.router.add_get("/api/items", list_guild_items)
+    app.router.add_post("/api/items/purge", purge_guild_items)
     app.router.add_get("/health", health)
 
     return app

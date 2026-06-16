@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import discord
+from discord import app_commands
 from discord.ext import commands
 from aiohttp import web
 import database as db
@@ -16,10 +17,44 @@ def load_bot_token() -> str:
         return json.load(f)["bot_token"]
 
 
+class GachaCommandTree(app_commands.CommandTree):
+    """Command tree that enforces the per-user '抽獎權限' (bot access) switch.
+
+    A disabled user is blocked from every slash command. Server administrators
+    always bypass the block so they can never lock themselves out via the dashboard.
+    """
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        gid = interaction.guild_id
+        if gid is None:
+            return True  # DMs / no guild context — nothing to gate
+        user = interaction.user
+        if isinstance(user, discord.Member) and user.guild_permissions.administrator:
+            return True
+        enabled = await asyncio.to_thread(db.is_user_enabled, str(gid), str(user.id))
+        if not enabled:
+            msg = "🚫 你已被管理員停用，無法使用機器人相關指令，請聯絡管理員。"
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        return True
+
+    async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # A blocked user already got a message in interaction_check; stay quiet.
+        if isinstance(error, app_commands.CheckFailure):
+            return
+        await super().on_error(interaction, error)
+
+
 class GachaBot(commands.Bot):
     def __init__(self, bot_token: str):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="!", intents=intents, tree_cls=GachaCommandTree)
         self.bot_token_str = bot_token
         self.guild_configs: dict[str, dict] = {}
 

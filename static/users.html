@@ -36,6 +36,26 @@
   .stat .label { font-size: 11px; color: #888; }
   .stat .value { font-size: 20px; font-weight: 600; color: #a0a0ff; }
   .activity-badge { display: inline-block; background: #f39c12; color: #000; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-left: 8px; }
+  .btn-danger { background: #e74c3c; color: #fff; }
+  .btn-danger:hover { background: #c0392b; }
+  .btn-warning { background: #f39c12; color: #fff; }
+  .btn-warning:hover { background: #e67e22; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+  /* toggle switch */
+  .switch { position: relative; display: inline-block; width: 42px; height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: #c0392b; border-radius: 22px; transition: .2s; }
+  .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: #2ecc71; }
+  .switch input:checked + .slider:before { transform: translateX(20px); }
+  .inv-panel { background: #1a1b2e; border-radius: 8px; padding: 12px; }
+  .inv-item { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid #2a2c4a; flex-wrap: wrap; }
+  .inv-item:last-child { border-bottom: none; }
+  .inv-item input, .inv-item select { padding: 4px 8px; border-radius: 4px; border: 1px solid #444; background: #242640; color: #e0e0e0; font-size: 12px; }
+  .inv-name { width: 160px; }
+  .inv-rarity { width: 80px; }
+  .inv-count { width: 70px; text-align: right; }
+  .danger-zone { border-color: #e74c3c !important; }
 </style>
 </head>
 <body>
@@ -67,11 +87,34 @@
             <th>⚡ 精力</th>
             <th>🪙 代幣</th>
             <th id="event-col" style="display:none">🎪 限時代幣</th>
+            <th>🎟️ 抽獎權限</th>
             <th></th>
           </tr>
         </thead>
         <tbody id="users-table"></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Danger zone -->
+  <div class="card danger-zone">
+    <h2 style="color:#e74c3c">⚠️ 危險操作</h2>
+
+    <h3 style="font-size:14px;color:#e0e0e0;margin-bottom:6px">💰 重置代幣</h3>
+    <p style="font-size:13px;color:#aaa;margin-bottom:10px">將此伺服器所有玩家的代幣與限時代幣歸零（精力、簽到、背包不受影響），無法復原。</p>
+    <button class="btn btn-danger" onclick="resetTokens()">重置所有人代幣</button>
+
+    <hr style="border-color:#333560;margin:18px 0" />
+
+    <h3 style="font-size:14px;color:#e0e0e0;margin-bottom:6px">🎒 清除全伺服器道具（可選擇）</h3>
+    <p style="font-size:13px;color:#aaa;margin-bottom:10px">列出全伺服器玩家擁有的所有道具，勾選後從所有人背包中刪除被勾選的道具。</p>
+    <button class="btn btn-warning" onclick="loadGuildItems()">載入道具清單</button>
+    <div id="guild-items" style="margin-top:12px"></div>
+    <div id="guild-items-actions" style="display:none;margin-top:12px;align-items:center;gap:12px">
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="items-select-all" onchange="toggleAllItems(this.checked)" style="width:auto" /> 全選
+      </label>
+      <button class="btn btn-danger" onclick="purgeItems()" style="margin-left:12px">確定刪除勾選道具</button>
     </div>
   </div>
 </div>
@@ -147,13 +190,182 @@ async function loadUsers() {
 
 function renderUsers(users) {
   const tb = document.getElementById('users-table');
-  tb.innerHTML = users.map(u => `<tr data-uid="${u.user_id}">
+  const colspan = activityActive ? 6 : 5;
+  tb.innerHTML = users.map(u => {
+    const enabled = (u.enabled === undefined || u.enabled === null) ? 1 : u.enabled;
+    return `<tr data-uid="${u.user_id}">
     <td><code>${u.user_id}</code></td>
     <td><input class="edit-input" type="number" value="${u.energy}" data-field="energy" data-uid="${u.user_id}" /></td>
     <td><input class="edit-input" type="number" value="${u.tokens}" data-field="tokens" data-uid="${u.user_id}" /></td>
     ${activityActive ? `<td><input class="edit-input" type="number" value="${u.event_tokens || 0}" data-field="event_tokens" data-uid="${u.user_id}" /></td>` : ''}
-    <td><button class="btn btn-success" onclick="saveUser('${u.user_id}')">儲存</button></td>
-  </tr>`).join('');
+    <td><label class="switch"><input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleEnabled('${u.user_id}', this.checked)" /><span class="slider"></span></label></td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-success btn-sm" onclick="saveUser('${u.user_id}')">儲存</button>
+      <button class="btn btn-warning btn-sm" onclick="toggleInventory('${u.user_id}')">道具</button>
+    </td>
+  </tr>
+  <tr class="inv-row" data-inv="${u.user_id}" style="display:none"><td colspan="${colspan}"><div class="inv-panel" id="inv-${u.user_id}">載入中...</div></td></tr>`;
+  }).join('');
+}
+
+async function toggleEnabled(uid, checked) {
+  try {
+    await api('POST', '/api/users', { user_id: uid, enabled: checked ? 1 : 0 });
+    const u = allUsers.find(x => x.user_id === uid);
+    if (u) u.enabled = checked ? 1 : 0;
+    toast(checked ? '已開啟抽獎權限' : '已關閉抽獎權限（該玩家無法使用機器人）');
+  } catch (e) { toast('更新失敗', true); loadUsers(); }
+}
+
+async function toggleInventory(uid) {
+  const row = document.querySelector(`tr[data-inv="${uid}"]`);
+  if (!row) return;
+  if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+  row.style.display = '';
+  renderInventory(uid, [{ loading: true }]);
+  try {
+    const items = await api('GET', '/api/users/inventory?user=' + encodeURIComponent(uid));
+    renderInventory(uid, items);
+  } catch (e) {
+    document.getElementById('inv-' + uid).innerHTML = '<span style="color:#e74c3c">載入失敗</span>';
+  }
+}
+
+const RARITIES = ['N', 'R', 'SR', 'SSR', '秘藏'];
+
+function renderInventory(uid, items) {
+  const panel = document.getElementById('inv-' + uid);
+  if (!panel) return;
+  if (items.length && items[0].loading) { panel.innerHTML = '載入中...'; return; }
+  if (!items.length) { panel.innerHTML = '<span style="color:#888">背包是空的</span>'; return; }
+  panel.innerHTML = items.map(it => {
+    const opts = RARITIES.map(r => `<option value="${r}" ${r === it.rarity ? 'selected' : ''}>${r}</option>`).join('');
+    const nm = (it.item_name || '').replace(/"/g, '&quot;');
+    return `<div class="inv-item" data-oldname="${nm}" data-oldrarity="${it.rarity}">
+      <input class="inv-name" type="text" value="${nm}" />
+      <select class="inv-rarity">${opts}</select>
+      <span style="color:#888;font-size:11px">數量</span>
+      <input class="inv-count" type="number" min="0" value="${it.count}" />
+      <button class="btn btn-success btn-sm" onclick="saveInvItem('${uid}', this)">儲存</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteInvItem('${uid}', this)">刪除</button>
+    </div>`;
+  }).join('');
+}
+
+async function saveInvItem(uid, btn) {
+  const row = btn.closest('.inv-item');
+  const body = {
+    user_id: uid,
+    old_name: row.dataset.oldname,
+    old_rarity: row.dataset.oldrarity,
+    name: row.querySelector('.inv-name').value.trim(),
+    rarity: row.querySelector('.inv-rarity').value,
+    count: row.querySelector('.inv-count').value,
+  };
+  if (!body.name) { toast('名稱不可為空', true); return; }
+  try {
+    const res = await fetch('/api/users/inventory?guild=' + currentGuild, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { toast(data.msg || '儲存失敗', true); return; }
+    toast('道具已更新');
+    toggleInventory(uid); toggleInventory(uid);
+  } catch (e) { toast('儲存失敗', true); }
+}
+
+async function deleteInvItem(uid, btn) {
+  const row = btn.closest('.inv-item');
+  const name = row.dataset.oldname, rarity = row.dataset.oldrarity;
+  if (!confirm(`確定刪除該玩家的「${rarity} ${name}」整疊道具？`)) return;
+  try {
+    const res = await fetch('/api/users/inventory?guild=' + currentGuild, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: uid, item_name: name, rarity }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { toast('刪除失敗', true); return; }
+    toast('道具已刪除');
+    row.remove();
+  } catch (e) { toast('刪除失敗', true); }
+}
+
+function currentGuildName() {
+  const sel = document.getElementById('guild-select');
+  return sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
+}
+
+async function resetTokens() {
+  if (!currentGuild) { toast('請先選擇伺服器', true); return; }
+  const name = currentGuildName();
+  if (!confirm(`確定將「${name}」所有玩家的代幣與限時代幣歸零？\n\n背包與精力不受影響，此操作無法復原！`)) return;
+  if (!confirm('再次確認：這會清空全伺服器玩家的代幣，確定執行？')) return;
+  try {
+    const res = await fetch('/api/reset?guild=' + currentGuild, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { toast('重置失敗', true); return; }
+    toast(`已重置 ${data.users} 位玩家的代幣`);
+    loadUsers();
+  } catch (e) { toast('重置失敗', true); }
+}
+
+// --- Server-wide selective item purge ---
+let guildItems = [];
+
+async function loadGuildItems() {
+  if (!currentGuild) { toast('請先選擇伺服器', true); return; }
+  try {
+    guildItems = await api('GET', '/api/items');
+  } catch (e) { toast('載入失敗', true); return; }
+  renderGuildItems();
+}
+
+function renderGuildItems() {
+  const box = document.getElementById('guild-items');
+  const actions = document.getElementById('guild-items-actions');
+  document.getElementById('items-select-all').checked = false;
+  if (!guildItems.length) {
+    box.innerHTML = '<span style="color:#888;font-size:13px">目前全伺服器沒有任何道具</span>';
+    actions.style.display = 'none';
+    return;
+  }
+  box.innerHTML = `<div class="inv-panel">${guildItems.map((it, i) => `
+    <div class="inv-item">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1">
+        <input type="checkbox" class="purge-check" data-idx="${i}" style="width:auto" />
+        <span style="display:inline-block;min-width:46px;font-size:11px;color:#a0a0ff">${it.rarity}</span>
+        <span style="flex:1">${(it.item_name || '').replace(/</g, '&lt;')}</span>
+        <span style="color:#888;font-size:12px">共 ${it.count} 件 · ${it.owners} 人持有</span>
+      </label>
+    </div>`).join('')}</div>`;
+  actions.style.display = 'flex';
+}
+
+function toggleAllItems(checked) {
+  document.querySelectorAll('.purge-check').forEach(cb => cb.checked = checked);
+}
+
+async function purgeItems() {
+  const checks = [...document.querySelectorAll('.purge-check:checked')];
+  if (!checks.length) { toast('請先勾選要刪除的道具', true); return; }
+  const items = checks.map(cb => {
+    const it = guildItems[parseInt(cb.dataset.idx)];
+    return { name: it.item_name, rarity: it.rarity };
+  });
+  const totalCount = checks.reduce((s, cb) => s + (guildItems[parseInt(cb.dataset.idx)].count || 0), 0);
+  if (!confirm(`確定從所有玩家背包中刪除勾選的 ${items.length} 種道具（共 ${totalCount} 件）？\n此操作無法復原！`)) return;
+  try {
+    const res = await fetch('/api/items/purge?guild=' + currentGuild, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { toast(data.msg || '刪除失敗', true); return; }
+    toast(`已刪除 ${data.types} 種道具，共 ${data.removed} 件`);
+    loadGuildItems();
+    loadUsers();
+  } catch (e) { toast('刪除失敗', true); }
 }
 
 function filterUsers() {

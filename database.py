@@ -26,7 +26,12 @@ def init_db():
                 event_tokens INTEGER DEFAULT 0,
                 last_checkin REAL DEFAULT 0,
                 last_energy_refresh REAL DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
                 PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS guild_state (
+                guild_id TEXT PRIMARY KEY,
+                last_redeem_at REAL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS work_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,18 +84,34 @@ def _migrate(conn):
     elif "event_tokens" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN event_tokens INTEGER DEFAULT 0")
 
+    # Re-read columns in case the block above rebuilt the table.
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "enabled" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN enabled INTEGER DEFAULT 1")
+
 
 def reassign_legacy_data(new_guild_id: str):
-    """Move all 'legacy' guild_id rows to a real guild."""
+    """Move all 'legacy' guild_id rows to a real guild.
+
+    `users` has a composite PK (guild_id, user_id). If the target guild already
+    has a row for that user, the legacy row cannot be moved — use OR IGNORE so the
+    conflicting legacy row is left in place rather than raising IntegrityError
+    (which would otherwise abort on_ready on every boot). No data is deleted;
+    orphaned legacy rows simply remain and stay invisible to every guild.
+    """
     with get_conn() as conn:
-        for table in ("users", "work_sessions", "inventory"):
+        conn.execute(
+            "UPDATE OR IGNORE users SET guild_id = ? WHERE guild_id = 'legacy'",
+            (new_guild_id,),
+        )
+        for table in ("work_sessions", "inventory"):
             conn.execute(f"UPDATE {table} SET guild_id = ? WHERE guild_id = 'legacy'", (new_guild_id,))
 
 
 def delete_guild_data(guild_id: str):
     """Delete all data for a guild."""
     with get_conn() as conn:
-        for table in ("users", "work_sessions", "inventory"):
+        for table in ("users", "work_sessions", "inventory", "guild_state"):
             conn.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
 
 
@@ -411,6 +432,189 @@ def redeem_item(guild_id: str, user_id: str, item_name: str, rarity: str) -> boo
     return True
 
 
+def get_redeem_cooldown_remaining(guild_id: str, cooldown_seconds: float) -> float:
+    """Seconds left on the guild-wide public redeem cooldown (0 if ready / disabled)."""
+    if not cooldown_seconds or cooldown_seconds <= 0:
+        return 0.0
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT last_redeem_at FROM guild_state WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+    last = row["last_redeem_at"] if row else 0
+    remaining = cooldown_seconds - (time.time() - last)
+    return remaining if remaining > 0 else 0.0
+
+
+def try_redeem(guild_id: str, user_id: str, item_name: str, rarity: str,
+               cooldown_seconds: float = 0) -> tuple[str, float]:
+    """Atomically check the guild-wide public cooldown and redeem one item.
+
+    Returns (status, remaining):
+      - ("cooldown", seconds_left): guild redeem is on shared cooldown, nothing removed
+      - ("notfound", 0): the item is not in the user's backpack, nothing removed
+      - ("ok", 0): one item removed and the shared cooldown timer reset
+    The cooldown is only (re)started on a successful redeem.
+    """
+    now = time.time()
+    with get_conn() as conn:
+        if cooldown_seconds and cooldown_seconds > 0:
+            row = conn.execute(
+                "SELECT last_redeem_at FROM guild_state WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+            last = row["last_redeem_at"] if row else 0
+            elapsed = now - last
+            if elapsed < cooldown_seconds:
+                return "cooldown", cooldown_seconds - elapsed
+        item = conn.execute(
+            "SELECT id FROM inventory WHERE guild_id = ? AND user_id = ? AND item_name = ? AND rarity = ? LIMIT 1",
+            (guild_id, user_id, item_name, rarity),
+        ).fetchone()
+        if item is None:
+            return "notfound", 0.0
+        conn.execute("DELETE FROM inventory WHERE id = ?", (item["id"],))
+        if cooldown_seconds and cooldown_seconds > 0:
+            conn.execute(
+                "INSERT OR REPLACE INTO guild_state (guild_id, last_redeem_at) VALUES (?, ?)",
+                (guild_id, now),
+            )
+    return "ok", 0.0
+
+
+# --- Inventory admin (dashboard) ---
+
+def rename_inventory_item(guild_id: str, old_name: str, old_rarity: str,
+                          new_name: str, new_rarity: str) -> int:
+    """Rename / re-rarity every matching item across ALL users in a guild.
+
+    Used when an admin renames a gacha-pool prize so backpack copies stay in sync.
+    Returns the number of inventory rows updated.
+    """
+    if old_name == new_name and old_rarity == new_rarity:
+        return 0
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE inventory SET item_name = ?, rarity = ? WHERE guild_id = ? AND item_name = ? AND rarity = ?",
+            (new_name, new_rarity, guild_id, old_name, old_rarity),
+        )
+        return cur.rowcount
+
+
+def get_user_inventory_admin(guild_id: str, user_id: str) -> list[dict]:
+    """Grouped backpack contents for one user (for the dashboard editor)."""
+    return get_inventory(guild_id, user_id)
+
+
+def admin_delete_user_item(guild_id: str, user_id: str, item_name: str, rarity: str) -> int:
+    """Delete the whole stack of one item from a single user's backpack."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM inventory WHERE guild_id = ? AND user_id = ? AND item_name = ? AND rarity = ?",
+            (guild_id, user_id, item_name, rarity),
+        )
+        return cur.rowcount
+
+
+def admin_edit_user_item(guild_id: str, user_id: str, old_name: str, old_rarity: str,
+                         new_name: str, new_rarity: str, new_count) -> bool:
+    """Edit a single user's owned item stack: rename, re-rarity and/or set count.
+
+    new_count of None leaves the quantity unchanged; 0 removes the stack entirely.
+    Returns False if the user has no such item.
+    """
+    now = time.time()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id FROM inventory WHERE guild_id = ? AND user_id = ? AND item_name = ? AND rarity = ? ORDER BY obtained_at",
+            (guild_id, user_id, old_name, old_rarity),
+        ).fetchall()
+        current = len(rows)
+        if current == 0:
+            return False
+        if new_count is not None:
+            new_count = max(0, int(new_count))
+            if new_count < current:
+                surplus = [(r["id"],) for r in rows[new_count:]]
+                conn.executemany("DELETE FROM inventory WHERE id = ?", surplus)
+            elif new_count > current:
+                conn.executemany(
+                    "INSERT INTO inventory (guild_id, user_id, item_name, rarity, obtained_at) VALUES (?, ?, ?, ?, ?)",
+                    [(guild_id, user_id, old_name, old_rarity, now)] * (new_count - current),
+                )
+        # Rename / re-rarity whatever remains.
+        conn.execute(
+            "UPDATE inventory SET item_name = ?, rarity = ? WHERE guild_id = ? AND user_id = ? AND item_name = ? AND rarity = ?",
+            (new_name, new_rarity, guild_id, user_id, old_name, old_rarity),
+        )
+    return True
+
+
+# --- Reset ---
+
+def reset_currency(guild_id: str) -> dict:
+    """Zero every user's tokens (and event tokens) for a guild.
+
+    Energy, check-in timers, work sessions, backpacks and prize config are left
+    untouched. Returns the number of users affected.
+    """
+    with get_conn() as conn:
+        users = conn.execute(
+            "UPDATE users SET tokens = 0, event_tokens = 0 WHERE guild_id = ?", (guild_id,)
+        ).rowcount
+    return {"users": users}
+
+
+def get_guild_item_summary(guild_id: str) -> list[dict]:
+    """Every distinct item owned by anyone in a guild, with totals.
+
+    Returns rows of {item_name, rarity, count, owners} so an admin can pick
+    which item types to purge server-wide.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT item_name, rarity, COUNT(*) AS count, COUNT(DISTINCT user_id) AS owners "
+            "FROM inventory WHERE guild_id = ? GROUP BY item_name, rarity "
+            "ORDER BY rarity, item_name",
+            (guild_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_items_everywhere(guild_id: str, items: list[dict]) -> int:
+    """Remove the given item types from EVERY user's backpack in a guild.
+
+    `items` is a list of {"name": ..., "rarity": ...}. Returns rows deleted.
+    """
+    if not items:
+        return 0
+    total = 0
+    with get_conn() as conn:
+        for it in items:
+            name = it.get("name")
+            rarity = it.get("rarity")
+            if not name or not rarity:
+                continue
+            cur = conn.execute(
+                "DELETE FROM inventory WHERE guild_id = ? AND item_name = ? AND rarity = ?",
+                (guild_id, name, rarity),
+            )
+            total += cur.rowcount
+    return total
+
+
+# --- Access control ---
+
+def is_user_enabled(guild_id: str, user_id: str) -> bool:
+    """Whether a user is allowed to use the bot. Unknown users default to enabled."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM users WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        ).fetchone()
+    if row is None:
+        return True
+    return bool(row["enabled"])
+
+
 def get_inventory(guild_id: str, user_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
@@ -469,7 +673,7 @@ def get_all_users(guild_id: str, config: dict) -> list[dict]:
 
 
 def update_user(guild_id: str, user_id: str, data: dict):
-    allowed = ("energy", "tokens", "event_tokens")
+    allowed = ("energy", "tokens", "event_tokens", "enabled")
     sets = []
     vals = []
     for key in allowed:
